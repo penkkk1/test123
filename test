@@ -1,7 +1,74 @@
-local file = io.open("game_code.txt", "w")
-for _, v in pairs(game:GetDescendants()) do
-    if v:IsA("Script") or v:IsA("LocalScript") then
-        file:write(v.Name .. "\n" .. v.Source .. "\n\n")
+--[[
+    Delta Executor - Universal Script Dumper
+    Place this entire script in your executor and run it.
+    It will create a file called 'DUMPED_GAME_SCRIPTS.txt' in your Delta workspace.
+]]
+
+local writefile = writefile or error("writefile function not found! (Is this Delta Executor?)")
+local isfile = isfile or function() return false end
+
+-- 1. Define the output file name
+local outputFileName = "DUMPED_GAME_SCRIPTS.txt"
+
+-- 2. Clear previous dump
+if isfile(outputFileName) then
+    writefile(outputFileName, "-- Overwriting previous dump...\n")
+else
+    writefile(outputFileName, "-- Starting fresh dump...\n")
+end
+
+-- 3. Initialize counters
+local totalScripts = 0
+local successfulDumps = 0
+
+-- 4. Search all instances
+local allInstances = game:GetDescendants()
+table.insert(allInstances, 1, game) -- Include the DataModel itself
+
+for _, v in ipairs(allInstances) do
+    if v:IsA("Script") or v:IsA("LocalScript") or v:IsA("ModuleScript") then
+        totalScripts = totalScripts + 1
+        local success, source = pcall(function()
+            -- Attempt 1: Standard property (usually nil)
+            local src = v.Source
+            if src and src ~= "" then return src end
+
+            -- Attempt 2: Use a decompiler if available (common in executors)
+            if getscriptclosure then
+                local bytecode = getscriptclosure(v)
+                -- Note: Advanced decompilation is needed to get readable code from bytecode.
+                -- This simply indicates that bytecode exists.
+                if bytecode then
+                    return "--[[ BYTECODE DETECTED, MANUAL DECOMPILATION NEEDED ]]"
+                end
+            end
+            
+            -- Attempt 3: Last resort, fallback
+            return "--[[ SOURCE UNAVAILABLE OR PROTECTED ]]"
+        end)
+
+        if success then
+            successfulDumps = successfulDumps + 1
+            local header = string.format("\n--[ %s: %s ]--\n-- Full Path: %s\n\n", 
+                                         v.ClassName, v.Name, v:GetFullName())
+            local content = header .. source .. "\n\n\n"
+            -- Append to the file
+            appendfile(outputFileName, content)
+            print("[Dumper] Dumped: " .. v:GetFullName())
+        else
+            warn("[Dumper] Failed to dump: " .. v:GetFullName() .. " | Error: " .. tostring(source))
+            appendfile(outputFileName, string.format("\n--[ FAILED: %s ]--\n-- Error: %s\n\n", 
+                                                      v:GetFullName(), tostring(source)))
+        end
+        
+        task.wait() -- Small delay to prevent overwhelming the executor
     end
 end
-file:close()
+
+-- 5. Final summary
+local summary = string.format("\n-- DUMP COMPLETE --\n-- Total Scripts Found: %d\n-- Successfully Dumped: %d\n-- Failed: %d\n",
+                              totalScripts, successfulDumps, totalScripts - successfulDumps)
+appendfile(outputFileName, summary)
+
+print(string.format("Script dump complete! Check your Delta Executor workspace for '%s'", outputFileName))
+print(string.format("Stats: %d/%d scripts dumped.", successfulDumps, totalScripts))
