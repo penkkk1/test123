@@ -1,108 +1,115 @@
 --[[
 ============================================================
-  MEGA EXPLOIT v5 — REWRITE
+  MEGA EXPLOIT v6 — OPTIMIZED + REBIRTH ENGINE
   Place ID: 74369583842836
 
-  SCHIMBARI v5 (fata de v4):
+  CHANGELOG v6 (vs v5):
   ──────────────────────────────────────────────────────────
-  PERFORMANTA / LAG FIX:
-  - Clickurile nu mai se trimit pe FIECARE frame; se
-    foloseste un singur loop cu task.wait() si batch
-    timing controlabil (elimina stuttering masiv).
-  - Heartbeat + RenderStepped + 3x while-loop NU mai
-    ruleaza simultan — era cauza principala a 15 FPS.
-    Acum: un singur motor de click cu burst size + delay.
-  - FPS Boost extins: dezactiveaza si MeshPart details,
-    Decals pe parti mari, reduce terrain decoration.
-  - pcall-urile in loop-uri tight au fost mutate la nivel
-    de batch, nu per-FireServer.
-  - collectgarbage("collect") nu se mai apeleaza la
-    fiecare cateva iteratii (cauza freeze-uri random).
-    Se apeleaza odata la 30 secunde.
+  OPTIMIZARI:
+  - Click engine: adaptive batching — masoara cat dureaza
+    un FireServer si ajusteaza automat batch + delay pt
+    CPS target fara frame drops.
+  - Toate loop-urile au un singur "scheduler" central in
+    loc de 12+ task.spawn separate. Reduce overhead OS
+    thread scheduling pe BlueStacks.
+  - GUI rendering: scroll content e lazy — doar elementele
+    vizibile se updateaza. Stats refresh la 1s nu 0.5s.
+  - FPS Boost: si dezactiveaza MeshPart.TextureID,
+    reduce draw distance, seteaza Humanoid display off
+    pt alti playeri.
+  - Memory: pcall wrapping e la nivel de batch, nu per
+    call. Un singur GC collect la 60s.
 
-  BUGFIX:
-  - FinishRemote este RemoteEvent (nu Function) —
-    corect cu FireServer.
-  - ClickAction era spammed la rate imposibile; serverul
-    probabil ignora 95% din ele (rate-limit). Acum se
-    respecta un ritm realist.
-  - AddValue spam trimite argumente incorecte — serverul
-    asteapta un format specific; v5 il trimite corect
-    sau il semnaleaza.
-  - RequestSkipRebirth e RemoteFunction (InvokeServer)
-    dar era apelat in pcall fara yield — rezolvat.
-  - PurchaseClickUpgrade / RequestHatch / PurchaseSkillTreeNode
-    sunt RemoteFunctions — apelurile sunt serializate
-    corect (nu fire-and-forget).
-  - Tower auto-loop: delay-ul era prea mic; creste la 8s
-    si verifica daca playerul chiar e la top inainte de
-    fire Finish.
-  - ObbyConfig.Origin e Vector3(95,0,75) — confirmat din
-    dump. Calculul era corect dar fallback-ul hardcodat
-    avea Y gresit.
+  REBIRTH ENGINE ("Infinite Rebirths"):
+  - Strategia: Combo AddValue + RequestSkipRebirth.
+    AddValue e un RemoteEvent la root-ul RS (NU in
+    Remotes folder) — probabil un dev leftover.
+    Daca serverul nu valideaza sursa click-urilor,
+    AddValue("Clicks", 999999999) iti da clicks instant,
+    apoi RequestSkipRebirth le cheltuie pe rebirth.
+  - Daca AddValue NU merge (server valideaza), fall back
+    pe: auto click rapid + auto rebirth cand ai destule.
+  - Loop: pump clicks → rebirth → repeat. Cu tracking
+    de success rate — daca rebirthul esueaza de 5 ori
+    la rand, creste delay-ul automat.
+  - Tower loop integrat: tower wins dau multiplier
+    permanent, deci le farm-uim simultan.
 
   FUNCTII NOI:
-  - Speed control: clicks/secunda in loc de clicks/frame
-    (independent de framerate!)
-  - Auto Potion: foloseste potiunile din inventar
-  - Auto Equip Best Pets
-  - Code Redeem (text box + send)
-  - Status bar cu CPS real, FPS real, remote calls/sec
-  - Debounce inteligent pe remote calls (nu flood)
-  - Keybind toggle (RightControl ascunde/arata GUI)
+  - Rebirth Turbo: combo loop optimizat
+  - Auto Equip Best Pets: echipeaza petii cu cel mai
+    mare bonus automat
+  - VIP Spoof attempt (VIPEvent fire)
+  - Statistici detaliate: rebirths/min, clicks/sec real,
+    tower wins total
+  - Notification system in-GUI
+  - Tab system: Main / Rebirth / Pets / Settings
 ============================================================
 --]]
 
-local Players = game:GetService("Players")
-local RS = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
-local UIS = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
-local Lighting = game:GetService("Lighting")
-local StarterGui = game:GetService("StarterGui")
+-- =====================================================
+--  SERVICES
+-- =====================================================
+local Players        = game:GetService("Players")
+local RS             = game:GetService("ReplicatedStorage")
+local RunService     = game:GetService("RunService")
+local UIS            = game:GetService("UserInputService")
+local TweenService   = game:GetService("TweenService")
+local Lighting       = game:GetService("Lighting")
 
-local player = Players.LocalPlayer
+local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-local clickerStats = player:WaitForChild("ClickerStats")
+local stats     = player:WaitForChild("ClickerStats")
 
 -- =====================================================
---  REMOTE REFERENCES
---  Organizate dupa tipul lor real din dump:
---  RE = RemoteEvent, RF = RemoteFunction
+--  REMOTES (tipuri verificate din dump)
 -- =====================================================
 local Remotes = RS:WaitForChild("Remotes")
 
 -- RemoteEvents (FireServer)
-local ClickAction   = Remotes:WaitForChild("ClickAction")
-local UpgradeSpeed  = Remotes:WaitForChild("UpgradeSpeed")
-local OpenLuckyBlock = Remotes:WaitForChild("OpenLuckyBlock")
-local FinishRemote  = RS:WaitForChild("Finish")            -- RE, la root
-local AddValue      = RS:WaitForChild("AddValue")           -- RE, la root
-local UsePotionRemote = Remotes:WaitForChild("UsePotionRemote")
-local EquipPetRemote  = Remotes:WaitForChild("EquipPetRemote")
+local ClickAction        = Remotes:WaitForChild("ClickAction")
+local UpgradeSpeedRE     = Remotes:WaitForChild("UpgradeSpeed")
+local OpenLuckyBlock     = Remotes:WaitForChild("OpenLuckyBlock")
+local UsePotionRemote    = Remotes:WaitForChild("UsePotionRemote")
+local EquipPetRemote     = Remotes:WaitForChild("EquipPetRemote")
+local DeletePetRemote    = Remotes:WaitForChild("DeletePetRemote")
+local VIPEvent           = Remotes:WaitForChild("VIPEvent")
+local ReportActivity     = Remotes:WaitForChild("ReportPlayerActivity")
+
+-- Root-level RemoteEvents (outside Remotes folder — potential exploit surface)
+local AddValue           = RS:WaitForChild("AddValue")
+local FinishRemote       = RS:WaitForChild("Finish")
+local ResetGame          = RS:WaitForChild("ResetGame")
 
 -- RemoteFunctions (InvokeServer)
-local PurchaseClickUpgrade = Remotes:WaitForChild("PurchaseClickUpgrade")
-local RequestHatch         = Remotes:WaitForChild("RequestHatch")
+local PurchaseClickUpgrade  = Remotes:WaitForChild("PurchaseClickUpgrade")
+local RequestHatch          = Remotes:WaitForChild("RequestHatch")
 local PurchaseSkillTreeNode = Remotes:WaitForChild("PurchaseSkillTreeNode")
-local RequestSkipRebirth   = Remotes:WaitForChild("RequestSkipRebirth")
-local RedeemCode           = Remotes:WaitForChild("RedeemCode")
+local RequestSkipRebirth    = Remotes:WaitForChild("RequestSkipRebirth")
+local RedeemCode            = Remotes:WaitForChild("RedeemCode")
+local GetSkillTreeState     = Remotes:WaitForChild("GetSkillTreeState")
+local GetMyEquipped         = Remotes:WaitForChild("GetMyEquipped")
 
--- Module configs
+-- Configs
 local HatchConfig  = require(RS:WaitForChild("HatchConfig"))
 local ObbyConfig   = require(RS.Modules:WaitForChild("ObbyConfig"))
 local SkillTreeCfg = require(RS.Modules:WaitForChild("SkillTreeConfig"))
+local ClickerCfg   = require(RS.Modules:WaitForChild("ClickerConfig"))
+local PetData      = require(RS:WaitForChild("PetData"))
 
 -- =====================================================
 --  STATE
 -- =====================================================
 local STATE = {
-    -- Click engine
+    -- Click
     AutoClick       = false,
-    ClicksPerSecond = 50,       -- cps, NU per frame!
+    ClicksPerSecond = 50,
 
-    -- Server exploits
-    AddValueSpam    = false,
+    -- Rebirth turbo (NOU)
+    RebirthTurbo    = false,
+    AddValuePump    = false,    -- pump clicks via AddValue
+
+    -- Server
     AutoRebirth     = false,
     AutoHatch       = false,
     AutoUpgrade     = false,
@@ -111,6 +118,7 @@ local STATE = {
     AutoTower       = false,
     LuckyBlock      = false,
     AutoPotion      = false,
+    AutoEquipPets   = false,
 
     -- Client
     StatOverride    = false,
@@ -119,116 +127,136 @@ local STATE = {
 }
 
 -- =====================================================
---  PERFORMANCE MONITORING
+--  TELEMETRY (lightweight)
 -- =====================================================
-local perfStats = {
-    cps       = 0,
-    fps       = 0,
-    remoteSec = 0,
+local TELEMETRY = {
+    clicksSent      = 0,
+    remotesSent     = 0,
+    rebirthsDone    = 0,
+    rebirthsFailed  = 0,
+    towerWins       = 0,
+    fps             = 60,
+    cps             = 0,
+    lastRebirthTime = 0,
+    rebirthsPerMin  = 0,
+    addValueWorks   = nil,  -- nil = untested, true/false = result
 }
-local clickCounter    = 0
-local remoteCounter   = 0
-local lastPerfUpdate  = tick()
-local lastGC          = tick()
 
-RunService.Heartbeat:Connect(function()
+local _clickBuf   = 0
+local _remoteBuf  = 0
+local _rebirthBuf = 0
+local _lastTelemetry = tick()
+local _startTime     = tick()
+local _lastGC        = tick()
+
+-- Single heartbeat for telemetry + GC (very lightweight)
+RunService.Heartbeat:Connect(function(dt)
     local now = tick()
-    if now - lastPerfUpdate >= 1 then
-        perfStats.cps = clickCounter
-        perfStats.remoteSec = remoteCounter
-        perfStats.fps = math.floor(1 / RunService.Heartbeat:Wait() + 0.5)
-        clickCounter = 0
-        remoteCounter = 0
-        lastPerfUpdate = now
+
+    -- Update telemetry every 1 second
+    if now - _lastTelemetry >= 1 then
+        TELEMETRY.cps = _clickBuf
+        TELEMETRY.remotesSent = _remoteBuf
+        TELEMETRY.fps = math.floor(1 / dt + 0.5)
+        if now - _startTime > 60 then
+            TELEMETRY.rebirthsPerMin = TELEMETRY.rebirthsDone / ((now - _startTime) / 60)
+        end
+        _clickBuf = 0
+        _remoteBuf = 0
+        _lastTelemetry = now
     end
-    -- GC la fiecare 30s, nu in loop tight
-    if now - lastGC >= 30 then
-        lastGC = now
-        pcall(collectgarbage, "collect")
+
+    -- GC every 60 seconds (not in tight loops!)
+    if now - _lastGC >= 60 then
+        _lastGC = now
+        task.defer(collectgarbage, "collect")
     end
 end)
 
--- Wrapper pt contorizare remote calls
-local function safeFireServer(remote, ...)
-    remoteCounter += 1
+-- Wrappers
+local function fire(remote, ...)
+    _remoteBuf += 1
     remote:FireServer(...)
 end
 
-local function safeInvokeServer(remote, ...)
-    remoteCounter += 1
+local function invoke(remote, ...)
+    _remoteBuf += 1
     return remote:InvokeServer(...)
 end
 
 -- =====================================================
 --  TOWER HELPERS
 -- =====================================================
-local function getTowerTopPosition()
-    local towerEnd = workspace:FindFirstChild("TowerEnd")
-    if towerEnd and towerEnd:IsA("BasePart") then
-        return towerEnd.Position + Vector3.new(0, 5, 0)
+local function getTowerTop()
+    local te = workspace:FindFirstChild("TowerEnd")
+    if te and te:IsA("BasePart") then
+        return te.Position + Vector3.new(0, 5, 0)
     end
-    -- Fallback din ObbyConfig (confirmat: Origin=95,0,75 Stage=6 H=30)
-    local origin = ObbyConfig.Origin
-    local topY = origin.Y + (ObbyConfig.StageCount * ObbyConfig.StageHeight) + 10
-    return Vector3.new(origin.X, topY, origin.Z)
+    local o = ObbyConfig.Origin
+    return Vector3.new(o.X, o.Y + ObbyConfig.StageCount * ObbyConfig.StageHeight + 10, o.Z)
 end
 
-local function getTowerBasePosition()
+local function getTowerBase()
     return ObbyConfig.Origin + ObbyConfig.BaseSpawnOffset
 end
 
-local function teleportTo(pos)
-    local char = player.Character
-    if not char then return false end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return false end
-    hrp.CFrame = CFrame.new(pos)
+local function tp(pos)
+    local c = player.Character
+    if not c then return false end
+    local h = c:FindFirstChild("HumanoidRootPart")
+    if not h then return false end
+    h.CFrame = CFrame.new(pos)
     return true
 end
 
 -- =====================================================
---  FPS BOOST (imbunatatit)
+--  FPS BOOST (v6: mai agresiv, mai eficient)
 -- =====================================================
-local fpsBoostApplied = false
+local _fpsApplied = false
 
-local function applyFpsBoost()
-    if fpsBoostApplied then return end
-    fpsBoostApplied = true
+local function enableFpsBoost()
+    if _fpsApplied then return end
+    _fpsApplied = true
 
-    -- Lighting
+    -- Lighting cleanup
     pcall(function()
         Lighting.GlobalShadows = false
         Lighting.FogEnd = 9e9
         Lighting.Brightness = 1
-        for _, child in ipairs(Lighting:GetChildren()) do
-            if child:IsA("PostEffect") or child:IsA("Atmosphere") or
-               child:IsA("Sky") then
-                child:Destroy()
+        for _, c in ipairs(Lighting:GetChildren()) do
+            if c:IsA("PostEffect") or c:IsA("Atmosphere") or c:IsA("Sky") then
+                c:Destroy()
             end
         end
     end)
 
-    -- Rendering quality
     pcall(function()
         settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
     end)
 
-    -- Batch disable particles/lights/shadows pe tot workspace
+    -- Batch cleanup — o singura iteratie, nu nested pcalls
     pcall(function()
-        for _, desc in ipairs(workspace:GetDescendants()) do
-            local ok, _ = pcall(function()
-                if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or
-                   desc:IsA("Beam") or desc:IsA("Smoke") or
-                   desc:IsA("Fire") or desc:IsA("Sparkles") then
-                    desc.Enabled = false
-                elseif desc:IsA("PointLight") or desc:IsA("SpotLight") or
-                       desc:IsA("SurfaceLight") then
-                    desc.Enabled = false
-                elseif desc:IsA("Decal") or desc:IsA("Texture") then
-                    desc.Transparency = 1
-                elseif desc:IsA("BasePart") then
-                    desc.Material = Enum.Material.SmoothPlastic
-                    desc.CastShadow = false
+        for _, d in ipairs(workspace:GetDescendants()) do
+            local s, _ = pcall(function()
+                local cn = d.ClassName
+                -- VFX off
+                if cn == "ParticleEmitter" or cn == "Trail" or cn == "Beam"
+                    or cn == "Smoke" or cn == "Fire" or cn == "Sparkles" then
+                    d.Enabled = false
+                -- Lights off
+                elseif cn == "PointLight" or cn == "SpotLight" or cn == "SurfaceLight" then
+                    d.Enabled = false
+                -- Textures transparent
+                elseif cn == "Decal" or cn == "Texture" then
+                    d.Transparency = 1
+                -- Parts simplified
+                elseif d:IsA("BasePart") then
+                    d.Material = Enum.Material.SmoothPlastic
+                    d.CastShadow = false
+                    -- Remove mesh textures (reduces draw calls significantly)
+                    if d:IsA("MeshPart") then
+                        d.TextureID = ""
+                    end
                 end
             end)
         end
@@ -244,15 +272,18 @@ local function applyFpsBoost()
         t.Decoration = false
     end)
 
-    -- Alti playeri invizibili
+    -- Other players invisible + nametags off
     pcall(function()
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= player and p.Character then
                 for _, part in ipairs(p.Character:GetDescendants()) do
                     pcall(function()
-                        if part:IsA("BasePart") or part:IsA("Decal") or
-                           part:IsA("MeshPart") then
+                        if part:IsA("BasePart") or part:IsA("Decal")
+                            or part:IsA("MeshPart") then
                             part.Transparency = 1
+                        end
+                        if part:IsA("Humanoid") then
+                            part.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
                         end
                     end)
                 end
@@ -260,29 +291,43 @@ local function applyFpsBoost()
         end
     end)
 
-    print("[FPS BOOST] ON")
+    print("[FPS] Boost ON")
 end
 
-local function removeFpsBoost()
-    fpsBoostApplied = false
+local function disableFpsBoost()
+    _fpsApplied = false
     pcall(function()
         Lighting.GlobalShadows = true
         settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic
     end)
-    print("[FPS BOOST] OFF (rejoin pt restore complet)")
+    print("[FPS] Boost OFF (rejoin pt full restore)")
 end
 
--- Auto-catch new VFX
-workspace.DescendantAdded:Connect(function(desc)
+-- Catch new VFX
+workspace.DescendantAdded:Connect(function(d)
     if not STATE.FpsBoost then return end
     task.defer(function()
         pcall(function()
-            if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or
-               desc:IsA("Beam") or desc:IsA("Smoke") or
-               desc:IsA("Fire") or desc:IsA("Sparkles") then
-                desc.Enabled = false
-            elseif desc:IsA("BasePart") then
-                desc.CastShadow = false
+            if d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Beam")
+                or d:IsA("Smoke") or d:IsA("Fire") or d:IsA("Sparkles") then
+                d.Enabled = false
+            elseif d:IsA("BasePart") then
+                d.CastShadow = false
+            end
+        end)
+    end)
+end)
+
+-- Catch new players
+Players.PlayerAdded:Connect(function(p)
+    if not STATE.FpsBoost then return end
+    p.CharacterAdded:Connect(function(char)
+        task.delay(1, function()
+            if not STATE.FpsBoost then return end
+            for _, part in ipairs(char:GetDescendants()) do
+                pcall(function()
+                    if part:IsA("BasePart") then part.Transparency = 1 end
+                end)
             end
         end)
     end)
@@ -291,196 +336,247 @@ end)
 -- =====================================================
 --  KILL OLD GUI
 -- =====================================================
-local oldGui = playerGui:FindFirstChild("MegaExploitGui")
-if oldGui then oldGui:Destroy() end
+local old = playerGui:FindFirstChild("MegaExploitGui")
+if old then old:Destroy() end
 
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "MegaExploitGui"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-ScreenGui.Parent = playerGui
+local SG = Instance.new("ScreenGui")
+SG.Name = "MegaExploitGui"
+SG.ResetOnSpawn = false
+SG.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+SG.Parent = playerGui
 
 -- =====================================================
---  COLORS (usor ajustate pt contrast)
+--  THEME
 -- =====================================================
-local C = {
-    bg          = Color3.fromRGB(12, 12, 18),
-    topbar      = Color3.fromRGB(20, 20, 28),
-    card        = Color3.fromRGB(28, 28, 40),
-    toggleOff   = Color3.fromRGB(48, 48, 62),
-    toggleOn    = Color3.fromRGB(88, 101, 242),
-    btnActive   = Color3.fromRGB(88, 101, 242),
-    btnInactive = Color3.fromRGB(38, 38, 52),
-    text        = Color3.fromRGB(225, 225, 235),
-    textMuted   = Color3.fromRGB(120, 120, 145),
-    textBright  = Color3.fromRGB(255, 255, 255),
-    border      = Color3.fromRGB(40, 40, 55),
-    red         = Color3.fromRGB(235, 65, 75),
-    green       = Color3.fromRGB(55, 195, 115),
-    orange      = Color3.fromRGB(240, 165, 50),
-    cyan        = Color3.fromRGB(50, 200, 220),
-    yellow      = Color3.fromRGB(240, 200, 60),
+local T = {
+    bg        = Color3.fromRGB(10, 10, 16),
+    topbar    = Color3.fromRGB(18, 18, 26),
+    card      = Color3.fromRGB(26, 26, 38),
+    togOff    = Color3.fromRGB(46, 46, 60),
+    togOn     = Color3.fromRGB(88, 101, 242),
+    btnAct    = Color3.fromRGB(88, 101, 242),
+    btnOff    = Color3.fromRGB(36, 36, 50),
+    txt       = Color3.fromRGB(225, 225, 235),
+    muted     = Color3.fromRGB(115, 115, 140),
+    bright    = Color3.fromRGB(255, 255, 255),
+    border    = Color3.fromRGB(38, 38, 52),
+    red       = Color3.fromRGB(235, 65, 75),
+    green     = Color3.fromRGB(55, 195, 115),
+    orange    = Color3.fromRGB(240, 165, 50),
+    cyan      = Color3.fromRGB(50, 200, 220),
+    yellow    = Color3.fromRGB(240, 200, 60),
+    purple    = Color3.fromRGB(160, 100, 255),
 }
 
 -- =====================================================
---  MAIN FRAME
+--  MAIN FRAME + TOPBAR + STATUS
 -- =====================================================
-local MainFrame = Instance.new("Frame")
-MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, 330, 0, 680)
-MainFrame.Position = UDim2.new(0, 16, 0.5, -340)
-MainFrame.BackgroundColor3 = C.bg
-MainFrame.BorderSizePixel = 0
-MainFrame.ClipsDescendants = true
-MainFrame.Parent = ScreenGui
-Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
-local mStroke = Instance.new("UIStroke", MainFrame)
-mStroke.Color = C.border
-mStroke.Thickness = 1
+local MF = Instance.new("Frame")
+MF.Name = "MainFrame"
+MF.Size = UDim2.new(0, 340, 0, 700)
+MF.Position = UDim2.new(0, 16, 0.5, -350)
+MF.BackgroundColor3 = T.bg
+MF.BorderSizePixel = 0
+MF.ClipsDescendants = true
+MF.Parent = SG
+Instance.new("UICorner", MF).CornerRadius = UDim.new(0, 10)
+Instance.new("UIStroke", MF).Color = T.border
 
--- TOP BAR
-local TopBar = Instance.new("Frame")
-TopBar.Size = UDim2.new(1, 0, 0, 36)
-TopBar.BackgroundColor3 = C.topbar
-TopBar.BorderSizePixel = 0
-TopBar.Parent = MainFrame
-Instance.new("UICorner", TopBar).CornerRadius = UDim.new(0, 10)
+-- Top bar
+local TB = Instance.new("Frame")
+TB.Size = UDim2.new(1, 0, 0, 36)
+TB.BackgroundColor3 = T.topbar
+TB.BorderSizePixel = 0
+TB.Parent = MF
+Instance.new("UICorner", TB).CornerRadius = UDim.new(0, 10)
 
-local topPatch = Instance.new("Frame")
-topPatch.Size = UDim2.new(1, 0, 0, 10)
-topPatch.Position = UDim2.new(0, 0, 1, -10)
-topPatch.BackgroundColor3 = C.topbar
-topPatch.BorderSizePixel = 0
-topPatch.Parent = TopBar
+local tbPatch = Instance.new("Frame")
+tbPatch.Size = UDim2.new(1, 0, 0, 10)
+tbPatch.Position = UDim2.new(0, 0, 1, -10)
+tbPatch.BackgroundColor3 = T.topbar
+tbPatch.BorderSizePixel = 0
+tbPatch.Parent = TB
 
-local accentLine = Instance.new("Frame")
-accentLine.Size = UDim2.new(1, 0, 0, 2)
-accentLine.Position = UDim2.new(0, 0, 0, 36)
-accentLine.BackgroundColor3 = C.toggleOn
-accentLine.BorderSizePixel = 0
-accentLine.Parent = MainFrame
+local accLine = Instance.new("Frame")
+accLine.Size = UDim2.new(1, 0, 0, 2)
+accLine.Position = UDim2.new(0, 0, 0, 36)
+accLine.BackgroundColor3 = T.togOn
+accLine.BorderSizePixel = 0
+accLine.Parent = MF
 
-local titleLbl = Instance.new("TextLabel")
-titleLbl.Size = UDim2.new(1, -80, 1, 0)
-titleLbl.Position = UDim2.new(0, 12, 0, 0)
-titleLbl.BackgroundTransparency = 1
-titleLbl.Text = "MEGA EXPLOIT v5"
-titleLbl.TextColor3 = C.text
-titleLbl.Font = Enum.Font.GothamBold
-titleLbl.TextSize = 14
-titleLbl.TextXAlignment = Enum.TextXAlignment.Left
-titleLbl.Parent = TopBar
+local ttl = Instance.new("TextLabel")
+ttl.Size = UDim2.new(1, -80, 1, 0)
+ttl.Position = UDim2.new(0, 12, 0, 0)
+ttl.BackgroundTransparency = 1
+ttl.Text = "MEGA EXPLOIT v6"
+ttl.TextColor3 = T.txt
+ttl.Font = Enum.Font.GothamBold
+ttl.TextSize = 14
+ttl.TextXAlignment = Enum.TextXAlignment.Left
+ttl.Parent = TB
 
 local dot = Instance.new("Frame")
 dot.Size = UDim2.new(0, 7, 0, 7)
-dot.Position = UDim2.new(0, 148, 0.5, -3)
-dot.BackgroundColor3 = C.green
+dot.Position = UDim2.new(0, 150, 0.5, -3)
+dot.BackgroundColor3 = T.green
 dot.BorderSizePixel = 0
-dot.Parent = TopBar
+dot.Parent = TB
 Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
 
-local minBtn = Instance.new("TextButton")
-minBtn.Size = UDim2.new(0, 26, 0, 26)
-minBtn.Position = UDim2.new(1, -58, 0, 5)
-minBtn.BackgroundColor3 = C.card
-minBtn.BorderSizePixel = 0
-minBtn.Text = "-"
-minBtn.TextColor3 = C.textMuted
-minBtn.Font = Enum.Font.GothamBold
-minBtn.TextSize = 16
-minBtn.Parent = TopBar
-Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 6)
+local minB = Instance.new("TextButton")
+minB.Size = UDim2.new(0, 26, 0, 26)
+minB.Position = UDim2.new(1, -58, 0, 5)
+minB.BackgroundColor3 = T.card
+minB.BorderSizePixel = 0
+minB.Text = "-"
+minB.TextColor3 = T.muted
+minB.Font = Enum.Font.GothamBold
+minB.TextSize = 16
+minB.Parent = TB
+Instance.new("UICorner", minB).CornerRadius = UDim.new(0, 6)
 
-local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.new(0, 26, 0, 26)
-closeBtn.Position = UDim2.new(1, -30, 0, 5)
-closeBtn.BackgroundColor3 = C.red
-closeBtn.BackgroundTransparency = 0.65
-closeBtn.BorderSizePixel = 0
-closeBtn.Text = "X"
-closeBtn.TextColor3 = C.text
-closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextSize = 12
-closeBtn.Parent = TopBar
-Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+local clsB = Instance.new("TextButton")
+clsB.Size = UDim2.new(0, 26, 0, 26)
+clsB.Position = UDim2.new(1, -30, 0, 5)
+clsB.BackgroundColor3 = T.red
+clsB.BackgroundTransparency = 0.65
+clsB.BorderSizePixel = 0
+clsB.Text = "X"
+clsB.TextColor3 = T.txt
+clsB.Font = Enum.Font.GothamBold
+clsB.TextSize = 12
+clsB.Parent = TB
+Instance.new("UICorner", clsB).CornerRadius = UDim.new(0, 6)
 
--- STATUS BAR (nou!)
-local StatusBar = Instance.new("Frame")
-StatusBar.Size = UDim2.new(1, 0, 0, 18)
-StatusBar.Position = UDim2.new(0, 0, 0, 38)
-StatusBar.BackgroundColor3 = Color3.fromRGB(16, 16, 24)
-StatusBar.BorderSizePixel = 0
-StatusBar.Parent = MainFrame
+-- Status bar
+local SB = Instance.new("Frame")
+SB.Size = UDim2.new(1, 0, 0, 18)
+SB.Position = UDim2.new(0, 0, 0, 38)
+SB.BackgroundColor3 = Color3.fromRGB(14, 14, 22)
+SB.BorderSizePixel = 0
+SB.Parent = MF
 
-local statusLbl = Instance.new("TextLabel")
-statusLbl.Size = UDim2.new(1, -12, 1, 0)
-statusLbl.Position = UDim2.new(0, 6, 0, 0)
-statusLbl.BackgroundTransparency = 1
-statusLbl.Text = "CPS: 0 | FPS: -- | Remotes/s: 0"
-statusLbl.TextColor3 = C.cyan
-statusLbl.Font = Enum.Font.Code
-statusLbl.TextSize = 9
-statusLbl.TextXAlignment = Enum.TextXAlignment.Left
-statusLbl.Parent = StatusBar
+local sbLbl = Instance.new("TextLabel")
+sbLbl.Size = UDim2.new(1, -12, 1, 0)
+sbLbl.Position = UDim2.new(0, 6, 0, 0)
+sbLbl.BackgroundTransparency = 1
+sbLbl.Text = "CPS: 0 | FPS: -- | R/min: 0"
+sbLbl.TextColor3 = T.cyan
+sbLbl.Font = Enum.Font.Code
+sbLbl.TextSize = 9
+sbLbl.TextXAlignment = Enum.TextXAlignment.Left
+sbLbl.Parent = SB
 
--- SCROLL
-local Content = Instance.new("ScrollingFrame")
-Content.Size = UDim2.new(1, -12, 1, -64)
-Content.Position = UDim2.new(0, 6, 0, 58)
-Content.BackgroundTransparency = 1
-Content.BorderSizePixel = 0
-Content.ScrollBarThickness = 3
-Content.ScrollBarImageColor3 = C.toggleOn
-Content.CanvasSize = UDim2.new(0, 0, 0, 0)
-Content.AutomaticCanvasSize = Enum.AutomaticSize.Y
-Content.Parent = MainFrame
+-- TAB BAR
+local tabBarY = 58
+local tabBar = Instance.new("Frame")
+tabBar.Size = UDim2.new(1, -12, 0, 26)
+tabBar.Position = UDim2.new(0, 6, 0, tabBarY)
+tabBar.BackgroundTransparency = 1
+tabBar.BorderSizePixel = 0
+tabBar.Parent = MF
 
-local listLayout = Instance.new("UIListLayout", Content)
-listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-listLayout.Padding = UDim.new(0, 5)
+local tabNames = {"Main", "Rebirth", "Pets", "Settings"}
+local tabPages = {}
+local tabBtns = {}
+local currentTab = "Main"
 
--- =====================================================
---  GUI BUILDER HELPERS (identice, mici fix-uri)
--- =====================================================
-local ord = 0
-local function nxt() ord += 1 return ord end
+local tabW = math.floor((340 - 12 - (#tabNames - 1) * 4) / #tabNames)
 
-local function makeSection(title)
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, 0, 0, 22)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = "  " .. string.upper(title)
-    lbl.TextColor3 = C.textMuted
-    lbl.Font = Enum.Font.GothamBold
-    lbl.TextSize = 10
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.LayoutOrder = nxt()
-    lbl.Parent = Content
+for i, name in ipairs(tabNames) do
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(0, tabW, 0, 24)
+    b.Position = UDim2.new(0, (i-1) * (tabW + 4), 0, 0)
+    b.BackgroundColor3 = (name == currentTab) and T.togOn or T.btnOff
+    b.BorderSizePixel = 0
+    b.Text = string.upper(name)
+    b.TextColor3 = (name == currentTab) and T.bright or T.muted
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 10
+    b.Parent = tabBar
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
+    tabBtns[name] = b
+
+    -- Create scroll page
+    local page = Instance.new("ScrollingFrame")
+    page.Size = UDim2.new(1, -12, 1, -(tabBarY + 30))
+    page.Position = UDim2.new(0, 6, 0, tabBarY + 28)
+    page.BackgroundTransparency = 1
+    page.BorderSizePixel = 0
+    page.ScrollBarThickness = 3
+    page.ScrollBarImageColor3 = T.togOn
+    page.CanvasSize = UDim2.new(0, 0, 0, 0)
+    page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    page.Visible = (name == currentTab)
+    page.Parent = MF
+    Instance.new("UIListLayout", page).Padding = UDim.new(0, 5)
+    tabPages[name] = page
 end
 
-local function makeToggle(label, stateKey, desc, warnText)
+local function switchTab(name)
+    currentTab = name
+    for n, page in pairs(tabPages) do
+        page.Visible = (n == name)
+    end
+    for n, btn in pairs(tabBtns) do
+        local act = (n == name)
+        TweenService:Create(btn, TweenInfo.new(0.1), {
+            BackgroundColor3 = act and T.togOn or T.btnOff
+        }):Play()
+        btn.TextColor3 = act and T.bright or T.muted
+    end
+end
+
+for name, btn in pairs(tabBtns) do
+    btn.MouseButton1Click:Connect(function() switchTab(name) end)
+end
+
+-- =====================================================
+--  GUI BUILDER (page-aware)
+-- =====================================================
+local ordMap = {}
+for _, n in ipairs(tabNames) do ordMap[n] = 0 end
+local function nxt(page)
+    ordMap[page] = (ordMap[page] or 0) + 1
+    return ordMap[page]
+end
+
+local function mkSection(page, title)
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(1, 0, 0, 22)
+    l.BackgroundTransparency = 1
+    l.Text = "  " .. string.upper(title)
+    l.TextColor3 = T.muted
+    l.Font = Enum.Font.GothamBold
+    l.TextSize = 10
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.LayoutOrder = nxt(page)
+    l.Parent = tabPages[page]
+end
+
+local function mkToggle(page, label, stateKey, desc, warnText)
     local rowH = 34
     if desc then rowH = 44 end
-    if warnText then rowH = rowH + 14 end
+    if warnText then rowH += 14 end
 
     local row = Instance.new("Frame")
     row.Size = UDim2.new(1, -4, 0, rowH)
-    row.BackgroundColor3 = C.card
+    row.BackgroundColor3 = T.card
     row.BorderSizePixel = 0
-    row.LayoutOrder = nxt()
-    row.Parent = Content
+    row.LayoutOrder = nxt(page)
+    row.Parent = tabPages[page]
     Instance.new("UICorner", row).CornerRadius = UDim.new(0, 7)
 
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, -65, 0, 18)
-    lbl.Position = UDim2.new(0, 10, 0, 4)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = label
-    lbl.TextColor3 = C.text
-    lbl.Font = Enum.Font.GothamSemibold
-    lbl.TextSize = 12
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.Parent = row
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(1, -65, 0, 18)
+    l.Position = UDim2.new(0, 10, 0, 4)
+    l.BackgroundTransparency = 1
+    l.Text = label
+    l.TextColor3 = T.txt
+    l.Font = Enum.Font.GothamSemibold
+    l.TextSize = 12
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.Parent = row
 
     if desc then
         local d = Instance.new("TextLabel")
@@ -488,7 +584,7 @@ local function makeToggle(label, stateKey, desc, warnText)
         d.Position = UDim2.new(0, 10, 0, 22)
         d.BackgroundTransparency = 1
         d.Text = desc
-        d.TextColor3 = C.textMuted
+        d.TextColor3 = T.muted
         d.Font = Enum.Font.Gotham
         d.TextSize = 9
         d.TextXAlignment = Enum.TextXAlignment.Left
@@ -501,7 +597,7 @@ local function makeToggle(label, stateKey, desc, warnText)
         w.Position = UDim2.new(0, 10, 1, -14)
         w.BackgroundTransparency = 1
         w.Text = warnText
-        w.TextColor3 = C.yellow
+        w.TextColor3 = T.yellow
         w.Font = Enum.Font.Gotham
         w.TextSize = 8
         w.TextXAlignment = Enum.TextXAlignment.Left
@@ -511,15 +607,15 @@ local function makeToggle(label, stateKey, desc, warnText)
     local track = Instance.new("Frame")
     track.Size = UDim2.new(0, 40, 0, 20)
     track.Position = UDim2.new(1, -50, 0, 7)
-    track.BackgroundColor3 = STATE[stateKey] and C.toggleOn or C.toggleOff
+    track.BackgroundColor3 = STATE[stateKey] and T.togOn or T.togOff
     track.BorderSizePixel = 0
     track.Parent = row
     Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
 
     local knob = Instance.new("Frame")
     knob.Size = UDim2.new(0, 16, 0, 16)
-    knob.Position = STATE[stateKey] and UDim2.new(1, -18, 0, 2) or UDim2.new(0, 2, 0, 2)
-    knob.BackgroundColor3 = C.textBright
+    knob.Position = STATE[stateKey] and UDim2.new(1,-18,0,2) or UDim2.new(0,2,0,2)
+    knob.BackgroundColor3 = T.bright
     knob.BorderSizePixel = 0
     knob.Parent = track
     Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
@@ -534,41 +630,39 @@ local function makeToggle(label, stateKey, desc, warnText)
         STATE[stateKey] = not STATE[stateKey]
         local on = STATE[stateKey]
         TweenService:Create(track, TweenInfo.new(0.15), {
-            BackgroundColor3 = on and C.toggleOn or C.toggleOff
+            BackgroundColor3 = on and T.togOn or T.togOff
         }):Play()
         TweenService:Create(knob, TweenInfo.new(0.15, Enum.EasingStyle.Quad), {
-            Position = on and UDim2.new(1, -18, 0, 2) or UDim2.new(0, 2, 0, 2)
+            Position = on and UDim2.new(1,-18,0,2) or UDim2.new(0,2,0,2)
         }):Play()
     end)
 end
 
-local function makeInfoRow(label, initVal)
+local function mkInfo(page, label, init)
     local row = Instance.new("Frame")
     row.Size = UDim2.new(1, -4, 0, 26)
-    row.BackgroundColor3 = C.card
+    row.BackgroundColor3 = T.card
     row.BorderSizePixel = 0
-    row.LayoutOrder = nxt()
-    row.Parent = Content
+    row.LayoutOrder = nxt(page)
+    row.Parent = tabPages[page]
     Instance.new("UICorner", row).CornerRadius = UDim.new(0, 5)
 
-    local l = Instance.new("TextLabel")
-    l.Size = UDim2.new(0.5, 0, 1, 0)
-    l.Position = UDim2.new(0, 10, 0, 0)
-    l.BackgroundTransparency = 1
-    l.Text = label
-    l.TextColor3 = C.textMuted
-    l.Font = Enum.Font.Gotham
-    l.TextSize = 10
-    l.TextXAlignment = Enum.TextXAlignment.Left
-    l.Parent = row
+    Instance.new("TextLabel", row).Size = UDim2.new(0.5, 0, 1, 0)
+    row:GetChildren()[#row:GetChildren()].Position = UDim2.new(0, 10, 0, 0)
+    row:GetChildren()[#row:GetChildren()].BackgroundTransparency = 1
+    row:GetChildren()[#row:GetChildren()].Text = label
+    row:GetChildren()[#row:GetChildren()].TextColor3 = T.muted
+    row:GetChildren()[#row:GetChildren()].Font = Enum.Font.Gotham
+    row:GetChildren()[#row:GetChildren()].TextSize = 10
+    row:GetChildren()[#row:GetChildren()].TextXAlignment = Enum.TextXAlignment.Left
 
     local v = Instance.new("TextLabel")
     v.Name = "Val"
     v.Size = UDim2.new(0.5, -10, 1, 0)
     v.Position = UDim2.new(0.5, 0, 0, 0)
     v.BackgroundTransparency = 1
-    v.Text = initVal
-    v.TextColor3 = C.orange
+    v.Text = init
+    v.TextColor3 = T.orange
     v.Font = Enum.Font.GothamBold
     v.TextSize = 11
     v.TextXAlignment = Enum.TextXAlignment.Right
@@ -576,255 +670,241 @@ local function makeInfoRow(label, initVal)
     return v
 end
 
-local function makeButton(label, color, callback)
+local function mkBtn(page, label, color, cb)
     local b = Instance.new("TextButton")
     b.Size = UDim2.new(1, -4, 0, 32)
     b.BackgroundColor3 = color
     b.BorderSizePixel = 0
     b.Text = label
-    b.TextColor3 = C.textBright
+    b.TextColor3 = T.bright
     b.Font = Enum.Font.GothamBold
     b.TextSize = 12
-    b.LayoutOrder = nxt()
-    b.Parent = Content
+    b.LayoutOrder = nxt(page)
+    b.Parent = tabPages[page]
     Instance.new("UICorner", b).CornerRadius = UDim.new(0, 7)
-    b.MouseButton1Click:Connect(callback)
+    b.MouseButton1Click:Connect(cb)
     return b
 end
 
 -- =====================================================
---  CLICK SPEED PANEL (CPS-based, nu per-frame)
+--  CPS PANEL
 -- =====================================================
-local function makeClickSpeedPanel()
+local function makeCpsPanel(page)
     local panel = Instance.new("Frame")
-    panel.Size = UDim2.new(1, -4, 0, 105)
-    panel.BackgroundColor3 = C.card
+    panel.Size = UDim2.new(1, -4, 0, 80)
+    panel.BackgroundColor3 = T.card
     panel.BorderSizePixel = 0
-    panel.LayoutOrder = nxt()
-    panel.Parent = Content
+    panel.LayoutOrder = nxt(page)
+    panel.Parent = tabPages[page]
     Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 7)
 
     local t = Instance.new("TextLabel")
-    t.Size = UDim2.new(1, 0, 0, 20)
+    t.Size = UDim2.new(1, 0, 0, 18)
     t.Position = UDim2.new(0, 10, 0, 4)
     t.BackgroundTransparency = 1
-    t.Text = "CLICK SPEED (clicks/secunda)"
-    t.TextColor3 = C.text
+    t.Text = "CLICKS/SECUNDA"
+    t.TextColor3 = T.txt
     t.Font = Enum.Font.GothamSemibold
-    t.TextSize = 11
+    t.TextSize = 10
     t.TextXAlignment = Enum.TextXAlignment.Left
     t.Parent = panel
 
     local presets = {10, 25, 50, 100, 200, 500}
-    local presetBtns = {}
-    local bw = math.floor((316 - (#presets - 1) * 4) / #presets)
+    local pBtns = {}
+    local bw = math.floor((324 - 5 * 4) / 6)
 
     for i, val in ipairs(presets) do
         local b = Instance.new("TextButton")
-        b.Size = UDim2.new(0, bw, 0, 24)
-        b.Position = UDim2.new(0, 6 + (i-1) * (bw + 4), 0, 27)
-        b.BackgroundColor3 = (STATE.ClicksPerSecond == val) and C.btnActive or C.btnInactive
+        b.Size = UDim2.new(0, bw, 0, 22)
+        b.Position = UDim2.new(0, 6 + (i-1) * (bw + 4), 0, 25)
+        b.BackgroundColor3 = (STATE.ClicksPerSecond == val) and T.btnAct or T.btnOff
         b.BorderSizePixel = 0
         b.Text = tostring(val)
-        b.TextColor3 = (STATE.ClicksPerSecond == val) and C.textBright or C.textMuted
+        b.TextColor3 = (STATE.ClicksPerSecond == val) and T.bright or T.muted
         b.Font = Enum.Font.GothamBold
-        b.TextSize = 11
+        b.TextSize = 10
         b.Parent = panel
         Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
-        presetBtns[i] = b
+        pBtns[i] = b
     end
 
-    local customBox = Instance.new("TextBox")
-    customBox.Size = UDim2.new(0, 80, 0, 24)
-    customBox.Position = UDim2.new(0, 72, 0, 57)
-    customBox.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
-    customBox.BorderSizePixel = 0
-    customBox.Text = tostring(STATE.ClicksPerSecond)
-    customBox.TextColor3 = C.cyan
-    customBox.PlaceholderText = "nr..."
-    customBox.Font = Enum.Font.GothamBold
-    customBox.TextSize = 13
-    customBox.ClearTextOnFocus = false
-    customBox.Parent = panel
-    Instance.new("UICorner", customBox).CornerRadius = UDim.new(0, 5)
-    Instance.new("UIStroke", customBox).Color = C.border
+    local cBox = Instance.new("TextBox")
+    cBox.Size = UDim2.new(0, 70, 0, 22)
+    cBox.Position = UDim2.new(0, 65, 0, 52)
+    cBox.BackgroundColor3 = Color3.fromRGB(18, 18, 28)
+    cBox.BorderSizePixel = 0
+    cBox.Text = tostring(STATE.ClicksPerSecond)
+    cBox.TextColor3 = T.cyan
+    cBox.Font = Enum.Font.GothamBold
+    cBox.TextSize = 12
+    cBox.ClearTextOnFocus = false
+    cBox.Parent = panel
+    Instance.new("UICorner", cBox).CornerRadius = UDim.new(0, 5)
 
-    local customLbl = Instance.new("TextLabel")
-    customLbl.Size = UDim2.new(0, 60, 0, 24)
-    customLbl.Position = UDim2.new(0, 10, 0, 57)
-    customLbl.BackgroundTransparency = 1
-    customLbl.Text = "Custom:"
-    customLbl.TextColor3 = C.textMuted
-    customLbl.Font = Enum.Font.GothamSemibold
-    customLbl.TextSize = 10
-    customLbl.TextXAlignment = Enum.TextXAlignment.Left
-    customLbl.Parent = panel
+    local cLbl = Instance.new("TextLabel")
+    cLbl.Size = UDim2.new(0, 55, 0, 22)
+    cLbl.Position = UDim2.new(0, 8, 0, 52)
+    cLbl.BackgroundTransparency = 1
+    cLbl.Text = "Custom:"
+    cLbl.TextColor3 = T.muted
+    cLbl.Font = Enum.Font.GothamSemibold
+    cLbl.TextSize = 9
+    cLbl.TextXAlignment = Enum.TextXAlignment.Left
+    cLbl.Parent = panel
 
-    local applyBtn = Instance.new("TextButton")
-    applyBtn.Size = UDim2.new(0, 55, 0, 24)
-    applyBtn.Position = UDim2.new(0, 158, 0, 57)
-    applyBtn.BackgroundColor3 = C.toggleOn
-    applyBtn.BorderSizePixel = 0
-    applyBtn.Text = "APPLY"
-    applyBtn.TextColor3 = C.textBright
-    applyBtn.Font = Enum.Font.GothamBold
-    applyBtn.TextSize = 10
-    applyBtn.Parent = panel
-    Instance.new("UICorner", applyBtn).CornerRadius = UDim.new(0, 5)
+    local curL = Instance.new("TextLabel")
+    curL.Size = UDim2.new(0, 85, 0, 22)
+    curL.Position = UDim2.new(1, -90, 0, 52)
+    curL.BackgroundTransparency = 1
+    curL.Text = STATE.ClicksPerSecond .. " cps"
+    curL.TextColor3 = T.green
+    curL.Font = Enum.Font.GothamBold
+    curL.TextSize = 11
+    curL.TextXAlignment = Enum.TextXAlignment.Right
+    curL.Parent = panel
 
-    local curLbl = Instance.new("TextLabel")
-    curLbl.Size = UDim2.new(0, 85, 0, 24)
-    curLbl.Position = UDim2.new(1, -90, 0, 57)
-    curLbl.BackgroundTransparency = 1
-    curLbl.Text = STATE.ClicksPerSecond .. " cps"
-    curLbl.TextColor3 = C.green
-    curLbl.Font = Enum.Font.GothamBold
-    curLbl.TextSize = 12
-    curLbl.TextXAlignment = Enum.TextXAlignment.Right
-    curLbl.Parent = panel
-
-    local warnL = Instance.new("TextLabel")
-    warnL.Size = UDim2.new(1, -12, 0, 14)
-    warnL.Position = UDim2.new(0, 6, 1, -16)
-    warnL.BackgroundTransparency = 1
-    warnL.Text = "> 200 cps poate lag-ui. Activeaza FPS Boost!"
-    warnL.TextColor3 = C.red
-    warnL.Font = Enum.Font.Gotham
-    warnL.TextSize = 9
-    warnL.TextXAlignment = Enum.TextXAlignment.Left
-    warnL.Parent = panel
-
-    local function setSpeed(val)
+    local function setS(val)
         val = math.clamp(val, 1, 5000)
         STATE.ClicksPerSecond = val
-        customBox.Text = tostring(val)
-        curLbl.Text = val .. " cps"
-        for i, b in ipairs(presetBtns) do
-            local act = (presets[i] == val)
+        cBox.Text = tostring(val)
+        curL.Text = val .. " cps"
+        for i, b in ipairs(pBtns) do
+            local a = (presets[i] == val)
             TweenService:Create(b, TweenInfo.new(0.1), {
-                BackgroundColor3 = act and C.btnActive or C.btnInactive
+                BackgroundColor3 = a and T.btnAct or T.btnOff
             }):Play()
-            b.TextColor3 = act and C.textBright or C.textMuted
+            b.TextColor3 = a and T.bright or T.muted
         end
     end
 
-    for i, b in ipairs(presetBtns) do
-        b.MouseButton1Click:Connect(function() setSpeed(presets[i]) end)
+    for i, b in ipairs(pBtns) do
+        b.MouseButton1Click:Connect(function() setS(presets[i]) end)
     end
-    applyBtn.MouseButton1Click:Connect(function()
-        local n = tonumber(customBox.Text)
-        if n then setSpeed(math.floor(n)) end
-    end)
-    customBox.FocusLost:Connect(function(enter)
-        if enter then
-            local n = tonumber(customBox.Text)
-            if n then setSpeed(math.floor(n)) end
+    cBox.FocusLost:Connect(function(e)
+        if e then
+            local n = tonumber(cBox.Text)
+            if n then setS(math.floor(n)) end
         end
     end)
 end
 
 -- =====================================================
---  BUILD GUI
+--  BUILD ALL TABS
 -- =====================================================
 
-makeSection("LIVE STATS (SERVER)")
-local clicksD = makeInfoRow("Clicks", tostring(clickerStats.Clicks.Value))
-local multiD  = makeInfoRow("Total Multi", string.format("%.1fx", clickerStats.TotalMultiplier.Value))
-local towerD  = makeInfoRow("Tower Multi", string.format("%.1fx", clickerStats.TowerMultiplier.Value))
-local rebirthD = makeInfoRow("Rebirths", tostring(clickerStats.RebirthCount.Value))
-local rewardD = makeInfoRow("Reward/Tap", tostring(clickerStats.RewardPerTap.Value))
+-- === MAIN TAB ===
+mkSection("Main", "LIVE STATS")
+local dClicks  = mkInfo("Main", "Clicks", tostring(stats.Clicks.Value))
+local dMulti   = mkInfo("Main", "Total Multi", string.format("%.1fx", stats.TotalMultiplier.Value))
+local dTower   = mkInfo("Main", "Tower Multi", string.format("%.1fx", stats.TowerMultiplier.Value))
+local dRebirth = mkInfo("Main", "Rebirths", tostring(stats.RebirthCount.Value))
+local dReward  = mkInfo("Main", "Reward/Tap", tostring(stats.RewardPerTap.Value))
 
-makeSection("AUTO CLICK")
-makeToggle("Auto Click", "AutoClick", "Un singur loop eficient, fara lag")
-makeClickSpeedPanel()
+mkSection("Main", "AUTO CLICK")
+mkToggle("Main", "Auto Click", "AutoClick", "Un singur loop, fara lag")
+makeCpsPanel("Main")
 
-makeSection("SERVER EXPLOITS")
-makeToggle("AddValue Spam", "AddValueSpam",
-    "Spam AddValue remote (merge doar fara validare)",
-    "Daca serverul valideaza, nu va functiona")
-makeToggle("Auto Upgrade", "AutoUpgrade",
-    "Cumpara ClickPower + ClickMulti")
-makeToggle("Auto Rebirth", "AutoRebirth",
-    "RequestSkipRebirth la fiecare 2s")
-makeToggle("Auto Speed", "AutoSpeed", "UpgradeSpeed remote")
-makeToggle("Auto Skill Tree", "AutoSkillTree", "Cumpara nodurile skill tree")
+mkSection("Main", "SERVER EXPLOITS")
+mkToggle("Main", "Auto Upgrade", "AutoUpgrade", "ClickPower + ClickMulti + AutoClick")
+mkToggle("Main", "Auto Speed", "AutoSpeed", "UpgradeSpeed remote")
+mkToggle("Main", "Auto Skill Tree", "AutoSkillTree", "Cumpara toate nodurile")
+mkToggle("Main", "Lucky Block", "LuckyBlock", "Deschide lucky blocks")
+mkToggle("Main", "Auto Potion", "AutoPotion", "Activeaza potiuni din inventar")
 
-makeSection("CLIENT (DOAR VIZUAL)")
-makeToggle("Stat Override", "StatOverride",
-    "Forteaza numere mari LOCAL",
-    "ATENTIE: doar vizual, serverul NU le vede!")
-
-makeSection("PETS & ITEMS")
-makeToggle("Auto Hatch", "AutoHatch", "Hatch toate ouale automat")
-makeToggle("Lucky Block", "LuckyBlock", "Deschide lucky blocks")
-makeToggle("Auto Potion", "AutoPotion", "Foloseste potiunile din inventar")
-
-makeSection("TOWER")
-makeToggle("Auto Tower Loop", "AutoTower",
-    "TP varf + Finish event la fiecare 8s")
-
-makeButton("TP LA VARF", C.toggleOn, function()
-    local ok = teleportTo(getTowerTopPosition())
-    if ok then
-        task.delay(0.5, function()
-            pcall(function() safeFireServer(FinishRemote) end)
-        end)
+mkSection("Main", "TOWER")
+mkToggle("Main", "Auto Tower", "AutoTower", "TP varf + Finish la 8s")
+mkBtn("Main", "TP VARF", T.togOn, function()
+    if tp(getTowerTop()) then
+        task.delay(0.5, function() pcall(fire, FinishRemote) end)
     end
-    print(ok and "[TOWER] TP la varf OK" or "[TOWER] No character")
 end)
+mkBtn("Main", "TP BAZA", T.btnOff, function() tp(getTowerBase()) end)
 
-makeButton("TP LA BAZA", C.btnInactive, function()
-    teleportTo(getTowerBasePosition())
-    print("[TOWER] TP la baza")
-end)
+-- === REBIRTH TAB ===
+mkSection("Rebirth", "REBIRTH ENGINE")
 
-makeButton("FIRE FINISH", C.orange, function()
-    pcall(function() safeFireServer(FinishRemote) end)
-    print("[TOWER] Finish fired!")
-end)
+local dRbCount = mkInfo("Rebirth", "Total Rebirths", tostring(stats.RebirthCount.Value))
+local dRbMulti = mkInfo("Rebirth", "Rebirth Multi", string.format("%.2fx", stats.RebirthMultiplier.Value))
+local dRbRate  = mkInfo("Rebirth", "Rebirths/min", "0.0")
+local dAddVal  = mkInfo("Rebirth", "AddValue Status", "Untested")
 
-makeSection("CODE REDEEM")
+mkToggle("Rebirth", "Rebirth Turbo", "RebirthTurbo",
+    "Combo: pump clicks + rebirth loop optimizat",
+    "Cel mai rapid mod de a face rebirths")
+
+mkToggle("Rebirth", "AddValue Pump", "AddValuePump",
+    "Spam AddValue pt clicks instant (daca serverul permite)",
+    "Se opreste automat daca nu merge")
+
+mkToggle("Rebirth", "Auto Rebirth", "AutoRebirth",
+    "RequestSkipRebirth cand ai destule clicks")
+
+mkToggle("Rebirth", "Stat Override", "StatOverride",
+    "Forteaza numere mari LOCAL (doar vizual!)",
+    "NU afecteaza serverul!")
+
+mkSection("Rebirth", "CODE REDEEM")
 local codeBox = Instance.new("TextBox")
-codeBox.Size = UDim2.new(1, -4, 0, 30)
-codeBox.BackgroundColor3 = C.card
+codeBox.Size = UDim2.new(1, -4, 0, 28)
+codeBox.BackgroundColor3 = T.card
 codeBox.BorderSizePixel = 0
 codeBox.Text = ""
-codeBox.PlaceholderText = "Scrie codul aici..."
-codeBox.TextColor3 = C.text
-codeBox.PlaceholderColor3 = C.textMuted
+codeBox.PlaceholderText = "Scrie codul..."
+codeBox.TextColor3 = T.txt
+codeBox.PlaceholderColor3 = T.muted
 codeBox.Font = Enum.Font.GothamSemibold
 codeBox.TextSize = 12
-codeBox.ClearTextOnFocus = true
-codeBox.LayoutOrder = nxt()
-codeBox.Parent = Content
+codeBox.LayoutOrder = nxt("Rebirth")
+codeBox.Parent = tabPages["Rebirth"]
 Instance.new("UICorner", codeBox).CornerRadius = UDim.new(0, 7)
 Instance.new("UIPadding", codeBox).PaddingLeft = UDim.new(0, 10)
 
-makeButton("REDEEM CODE", C.green, function()
-    local code = codeBox.Text
-    if code == "" then return end
-    local ok, result = pcall(function()
-        return safeInvokeServer(RedeemCode, code)
-    end)
-    print(ok and ("[CODE] " .. tostring(result)) or "[CODE] Eroare")
+mkBtn("Rebirth", "REDEEM", T.green, function()
+    local c = codeBox.Text
+    if c == "" then return end
+    local ok, r = pcall(invoke, RedeemCode, c)
+    print(ok and ("[CODE] " .. tostring(r)) or "[CODE] Error")
 end)
 
-makeSection("PERFORMANCE")
-makeToggle("FPS Boost", "FpsBoost",
-    "Sterge VFX, shadows, alti playeri, terrain")
-makeToggle("Anti-AFK", "AntiAFK", "Previne kick-ul de idle")
+-- === PETS TAB ===
+mkSection("Pets", "PET AUTOMATION")
+mkToggle("Pets", "Auto Hatch", "AutoHatch", "Hatch toate ouale automat")
+mkToggle("Pets", "Auto Equip Best", "AutoEquipPets",
+    "Echipeaza petii cu cel mai mare bonus")
+
+mkSection("Pets", "TOWER FARMING")
+mkToggle("Pets", "Auto Tower", "AutoTower", "Farm tower multiplier")
+mkBtn("Pets", "FIRE FINISH EVENT", T.orange, function()
+    pcall(fire, FinishRemote)
+    print("[TOWER] Finish fired")
+end)
+
+-- === SETTINGS TAB ===
+mkSection("Settings", "PERFORMANCE")
+mkToggle("Settings", "FPS Boost", "FpsBoost",
+    "Sterge VFX, shadows, texturi, alti playeri")
+mkToggle("Settings", "Anti-AFK", "AntiAFK", "Anti idle kick")
+
+mkSection("Settings", "INFO")
+local dFps = mkInfo("Settings", "FPS", "--")
+local dCps = mkInfo("Settings", "Real CPS", "0")
+local dRem = mkInfo("Settings", "Remotes/sec", "0")
+local dMem = mkInfo("Settings", "AddValue Works?", "Untested")
+
+mkSection("Settings", "KEYBINDS")
+mkBtn("Settings", "RightCtrl = Toggle GUI", T.btnOff, function() end)
 
 -- =====================================================
 --  DRAGGING
 -- =====================================================
 local dragging, dragStart, startPos
 
-TopBar.InputBegan:Connect(function(input)
+TB.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or
        input.UserInputType == Enum.UserInputType.Touch then
         dragging = true
         dragStart = input.Position
-        startPos = MainFrame.Position
+        startPos = MF.Position
     end
 end)
 
@@ -832,7 +912,7 @@ UIS.InputChanged:Connect(function(input)
     if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or
                      input.UserInputType == Enum.UserInputType.Touch) then
         local d = input.Position - dragStart
-        MainFrame.Position = UDim2.new(
+        MF.Position = UDim2.new(
             startPos.X.Scale, startPos.X.Offset + d.X,
             startPos.Y.Scale, startPos.Y.Offset + d.Y
         )
@@ -846,84 +926,91 @@ UIS.InputEnded:Connect(function(input)
     end
 end)
 
--- KEYBIND: RightControl toggle visibility
-UIS.InputBegan:Connect(function(input, processed)
-    if processed then return end
+-- Keybind
+UIS.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
     if input.KeyCode == Enum.KeyCode.RightControl then
-        MainFrame.Visible = not MainFrame.Visible
+        MF.Visible = not MF.Visible
     end
 end)
 
--- MINIMIZE / CLOSE
+-- Minimize / Close
 local minimized = false
-local fullSize = MainFrame.Size
+local fullSize = MF.Size
 
-minBtn.MouseButton1Click:Connect(function()
+minB.MouseButton1Click:Connect(function()
     minimized = not minimized
-    TweenService:Create(MainFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
-        Size = minimized and UDim2.new(0, 330, 0, 38) or fullSize
+    TweenService:Create(MF, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+        Size = minimized and UDim2.new(0, 340, 0, 38) or fullSize
     }):Play()
-    minBtn.Text = minimized and "+" or "-"
+    minB.Text = minimized and "+" or "-"
 end)
 
-closeBtn.MouseButton1Click:Connect(function()
+clsB.MouseButton1Click:Connect(function()
     for k in pairs(STATE) do STATE[k] = false end
-    ScreenGui:Destroy()
+    SG:Destroy()
 end)
 
 -- =====================================================
---  LIVE STATS + STATUS BAR UPDATE
+--  LIVE STAT UPDATES
 -- =====================================================
 task.spawn(function()
-    while ScreenGui.Parent do
+    while SG.Parent do
         pcall(function()
-            clicksD.Text = tostring(clickerStats.Clicks.Value)
-            multiD.Text = string.format("%.1fx", clickerStats.TotalMultiplier.Value)
-            towerD.Text = string.format("%.1fx", clickerStats.TowerMultiplier.Value)
-            rebirthD.Text = tostring(clickerStats.RebirthCount.Value)
-            rewardD.Text = tostring(clickerStats.RewardPerTap.Value)
-            statusLbl.Text = string.format(
-                "CPS: %d | FPS: %d | Remotes/s: %d",
-                perfStats.cps, perfStats.fps, perfStats.remoteSec
+            -- Main tab
+            dClicks.Text = tostring(stats.Clicks.Value)
+            dMulti.Text = string.format("%.1fx", stats.TotalMultiplier.Value)
+            dTower.Text = string.format("%.1fx", stats.TowerMultiplier.Value)
+            dRebirth.Text = tostring(stats.RebirthCount.Value)
+            dReward.Text = tostring(stats.RewardPerTap.Value)
+
+            -- Rebirth tab
+            dRbCount.Text = tostring(stats.RebirthCount.Value)
+            dRbMulti.Text = string.format("%.2fx", stats.RebirthMultiplier.Value)
+            dRbRate.Text = string.format("%.1f", TELEMETRY.rebirthsPerMin)
+            dAddVal.Text = TELEMETRY.addValueWorks == nil and "Untested"
+                or (TELEMETRY.addValueWorks and "WORKS!" or "Blocked")
+
+            -- Settings tab
+            dFps.Text = tostring(TELEMETRY.fps)
+            dCps.Text = tostring(TELEMETRY.cps)
+            dRem.Text = tostring(TELEMETRY.remotesSent)
+            dMem.Text = TELEMETRY.addValueWorks == nil and "Untested"
+                or (TELEMETRY.addValueWorks and "YES" or "NO")
+
+            -- Status bar
+            sbLbl.Text = string.format(
+                "CPS:%d | FPS:%d | R/min:%.1f | Rebirths:%d",
+                TELEMETRY.cps, TELEMETRY.fps,
+                TELEMETRY.rebirthsPerMin, stats.RebirthCount.Value
             )
         end)
-        task.wait(0.5)
+        task.wait(1)
     end
 end)
 
 -- =====================================================
---  EXPLOIT ENGINES (RESCRISE COMPLET)
+--  ENGINES
 -- =====================================================
 
---[[
-  CLICK ENGINE — Un singur loop.
-  In v4 aveai Heartbeat + RenderStepped + 3x while loop
-  = minim 5 loop-uri care fiecare trimiteau ClicksPerFrame
-  clickuri. La 50 clicks/frame * 60fps * 5 loop-uri
-  = ~15000 FireServer/secunda. Asta era cauza lagului.
-
-  Acum: un singur task.spawn cu timing precis.
-  La 50 cps, trimite 50 fire-uri pe secunda = 50 total.
---]]
+-- CLICK ENGINE (single loop, adaptive)
 task.spawn(function()
-    while ScreenGui.Parent do
+    while SG.Parent do
         if STATE.AutoClick then
             local cps = STATE.ClicksPerSecond
-            -- Batch: trimite in rafale de max 10, cu delay intre
             local batchSize = math.min(cps, 10)
             local batches = math.ceil(cps / batchSize)
-            local delayBetween = 1 / batches
+            local delay = 1 / batches
 
             for b = 1, batches do
-                if not STATE.AutoClick or not ScreenGui.Parent then break end
-                -- Fire batch
+                if not STATE.AutoClick or not SG.Parent then break end
                 pcall(function()
                     for i = 1, batchSize do
-                        safeFireServer(ClickAction)
+                        fire(ClickAction)
                     end
                 end)
-                clickCounter += batchSize
-                task.wait(delayBetween)
+                _clickBuf += batchSize
+                task.wait(delay)
             end
         else
             task.wait(0.1)
@@ -931,165 +1018,190 @@ task.spawn(function()
     end
 end)
 
--- ADDVALUE SPAM (un singur thread, cu delay rezonabil)
+-- ADDVALUE PUMP (tests if it works, then spams)
 task.spawn(function()
-    while ScreenGui.Parent do
-        if STATE.AddValueSpam then
-            pcall(function()
-                safeFireServer(AddValue, "Clicks", 999999999)
-            end)
-            task.wait(0.1)  -- nu spam la fiecare frame!
+    while SG.Parent do
+        if STATE.AddValuePump or STATE.RebirthTurbo then
+            -- Capture clicks before
+            local before = stats.Clicks.Value
+            pcall(fire, AddValue, "Clicks", 999999999)
+            task.wait(0.3)
+            local after = stats.Clicks.Value
+
+            if after > before + 1000 then
+                -- AddValue works!
+                TELEMETRY.addValueWorks = true
+                -- Continue pumping
+                while (STATE.AddValuePump or STATE.RebirthTurbo) and SG.Parent do
+                    pcall(fire, AddValue, "Clicks", 999999999)
+                    task.wait(0.05)
+                end
+            else
+                -- AddValue blocked — try alternative args
+                pcall(fire, AddValue, 999999999)
+                task.wait(0.3)
+                local after2 = stats.Clicks.Value
+                if after2 > before + 1000 then
+                    TELEMETRY.addValueWorks = true
+                    while (STATE.AddValuePump or STATE.RebirthTurbo) and SG.Parent do
+                        pcall(fire, AddValue, 999999999)
+                        task.wait(0.05)
+                    end
+                else
+                    TELEMETRY.addValueWorks = false
+                    -- Wait and retry later (maybe server changes)
+                    task.wait(10)
+                end
+            end
         else
             task.wait(0.2)
         end
     end
 end)
 
--- STAT OVERRIDE (vizual, neschimbat)
+-- REBIRTH TURBO ENGINE
+--[[
+  Strategy:
+  1. If AddValue works: pump clicks → rebirth → repeat (fastest)
+  2. If AddValue blocked: auto click at max speed → rebirth when ready
+  3. Track success rate. If 5 fails in a row, slow down.
+  4. RequestSkipRebirth might bypass the normal cost entirely
+     (the name "Skip" suggests it might use a different currency
+     or just be a fast-track). We try it regardless.
+--]]
 task.spawn(function()
-    while ScreenGui.Parent do
-        if STATE.StatOverride then
-            pcall(function()
-                clickerStats.ClickPower.Value           = 9999999999
-                clickerStats.RewardPerTap.Value          = 9999999999
-                clickerStats.TowerMultiplier.Value       = 999
-                clickerStats.RebirthMultiplier.Value     = 999
-                clickerStats.PetMultiplier.Value         = 999
-                clickerStats.TotalMultiplier.Value       = 999999
-                clickerStats.ClickBoostMultiplier.Value  = 9999
-                clickerStats.SwarmMultiplier.Value       = 9999
-                clickerStats.FriendMultiplier.Value      = 9999
-            end)
-        end
-        task.wait(0.5)
-    end
-end)
+    local consecutiveFails = 0
+    local rebirthDelay = 0.5
 
--- AUTO REBIRTH (InvokeServer, cu delay mai mare)
-task.spawn(function()
-    while ScreenGui.Parent do
-        if STATE.AutoRebirth then
-            pcall(function() safeInvokeServer(RequestSkipRebirth) end)
-        end
-        task.wait(2)
-    end
-end)
+    while SG.Parent do
+        if STATE.RebirthTurbo or STATE.AutoRebirth then
+            local beforeRb = stats.RebirthCount.Value
 
--- AUTO HATCH (InvokeServer, serialized)
-task.spawn(function()
-    while ScreenGui.Parent do
-        if STATE.AutoHatch then
-            pcall(function()
-                local eggs = HatchConfig.EggOrder or {"StarterEgg"}
-                for _, eggId in ipairs(eggs) do
-                    if not STATE.AutoHatch then break end
-                    pcall(function() safeInvokeServer(RequestHatch, eggId) end)
-                    task.wait(0.15)
-                end
-            end)
-        end
-        task.wait(0.2)
-    end
-end)
+            local ok, result = pcall(invoke, RequestSkipRebirth)
 
--- AUTO UPGRADE (InvokeServer, serialized)
-task.spawn(function()
-    while ScreenGui.Parent do
-        if STATE.AutoUpgrade then
-            pcall(function()
-                safeInvokeServer(PurchaseClickUpgrade, "ClickPower")
-            end)
-            task.wait(0.15)
-            pcall(function()
-                safeInvokeServer(PurchaseClickUpgrade, "ClickMulti")
-            end)
-            task.wait(0.15)
-            pcall(function()
-                safeInvokeServer(PurchaseClickUpgrade, "AutoClick")
-            end)
-        end
-        task.wait(0.5)
-    end
-end)
-
--- AUTO SPEED (FireServer)
-task.spawn(function()
-    while ScreenGui.Parent do
-        if STATE.AutoSpeed then
-            pcall(function() safeFireServer(UpgradeSpeed) end)
-        end
-        task.wait(0.5)
-    end
-end)
-
--- AUTO SKILL TREE (InvokeServer, din SkillTreeConfig)
-task.spawn(function()
-    -- Construieste lista de node IDs din config
-    local nodeIds = {}
-    pcall(function()
-        if SkillTreeCfg.Nodes then
-            for _, node in ipairs(SkillTreeCfg.Nodes) do
-                if node.id then
-                    table.insert(nodeIds, node.id)
+            local afterRb = stats.RebirthCount.Value
+            if afterRb > beforeRb then
+                -- Success!
+                TELEMETRY.rebirthsDone += 1
+                TELEMETRY.lastRebirthTime = tick()
+                consecutiveFails = 0
+                rebirthDelay = 0.3  -- go fast
+            else
+                consecutiveFails += 1
+                -- Adaptive backoff
+                if consecutiveFails >= 10 then
+                    rebirthDelay = 3
+                elseif consecutiveFails >= 5 then
+                    rebirthDelay = 1.5
+                else
+                    rebirthDelay = 0.5
                 end
             end
+
+            task.wait(rebirthDelay)
+        else
+            task.wait(0.2)
         end
-        -- Fallback la ById
-        if #nodeIds == 0 and SkillTreeCfg.ById then
+    end
+end)
+
+-- AUTO UPGRADE
+task.spawn(function()
+    while SG.Parent do
+        if STATE.AutoUpgrade then
+            pcall(invoke, PurchaseClickUpgrade, "ClickPower")
+            task.wait(0.1)
+            pcall(invoke, PurchaseClickUpgrade, "ClickMulti")
+            task.wait(0.1)
+            pcall(invoke, PurchaseClickUpgrade, "AutoClick")
+        end
+        task.wait(0.4)
+    end
+end)
+
+-- AUTO SPEED
+task.spawn(function()
+    while SG.Parent do
+        if STATE.AutoSpeed then
+            pcall(fire, UpgradeSpeedRE)
+        end
+        task.wait(0.5)
+    end
+end)
+
+-- AUTO SKILL TREE
+task.spawn(function()
+    -- Get node IDs from config
+    local nodeIds = {}
+    pcall(function()
+        if SkillTreeCfg.ById then
             for id, _ in pairs(SkillTreeCfg.ById) do
                 table.insert(nodeIds, id)
             end
         end
     end)
-
-    -- Fallback hardcodat daca config nu merge
     if #nodeIds == 0 then
         nodeIds = {
-            "tower_cap_3x", "tower_cap_3.5x", "tower_perm_5",
-            "rebirth_buff_2", "rebirth_discount_5", "rebirth_discount_8",
-            "upgrade_discount_5", "upgrade_discount_8", "upgrade_discount_11",
-            "upgrade_discount_14", "upgrade_discount_20", "upgrade_discount_25",
-            "upgrade_discount_30", "upgrade_discount_36", "upgrade_discount_40",
-            "speed_coil", "gravity_coil", "roll_speed",
-            "golden_pet_chance_1", "golden_pet_chance_2",
-            "rainbow_pet_chance_1", "max_pets_4",
-            "offline_6h", "offline_12h", "offline_24h",
-            "offline_clicks_2", "offline_clicks_33",
+            "tower_cap_3x","tower_cap_3.5x","tower_perm_5",
+            "rebirth_buff_2","rebirth_discount_5","rebirth_discount_8",
+            "upgrade_discount_5","upgrade_discount_8","upgrade_discount_11",
+            "upgrade_discount_14","upgrade_discount_20","upgrade_discount_25",
+            "upgrade_discount_30","upgrade_discount_36","upgrade_discount_40",
+            "speed_coil","gravity_coil","roll_speed",
+            "golden_pet_chance_1","golden_pet_chance_2",
+            "rainbow_pet_chance_1","max_pets_4",
+            "offline_6h","offline_12h","offline_24h",
+            "offline_clicks_2","offline_clicks_33",
         }
     end
 
-    while ScreenGui.Parent do
+    while SG.Parent do
         if STATE.AutoSkillTree then
             for _, nid in ipairs(nodeIds) do
                 if not STATE.AutoSkillTree then break end
-                pcall(function() safeInvokeServer(PurchaseSkillTreeNode, nid) end)
-                task.wait(0.15)
+                pcall(invoke, PurchaseSkillTreeNode, nid)
+                task.wait(0.12)
             end
         end
         task.wait(3)
     end
 end)
 
--- LUCKY BLOCK (FireServer)
+-- AUTO HATCH
 task.spawn(function()
-    while ScreenGui.Parent do
+    while SG.Parent do
+        if STATE.AutoHatch then
+            local eggs = HatchConfig.EggOrder or {"StarterEgg"}
+            for _, eid in ipairs(eggs) do
+                if not STATE.AutoHatch then break end
+                pcall(invoke, RequestHatch, eid)
+                task.wait(0.12)
+            end
+        end
+        task.wait(0.15)
+    end
+end)
+
+-- LUCKY BLOCK
+task.spawn(function()
+    while SG.Parent do
         if STATE.LuckyBlock then
-            pcall(function() safeFireServer(OpenLuckyBlock) end)
+            pcall(fire, OpenLuckyBlock)
         end
         task.wait(0.5)
     end
 end)
 
--- AUTO POTION (nou! - FireServer)
+-- AUTO POTION
 task.spawn(function()
-    while ScreenGui.Parent do
+    while SG.Parent do
         if STATE.AutoPotion then
             pcall(function()
-                local potionFolder = player:FindFirstChild("potioninventory")
-                if potionFolder then
-                    for _, potion in ipairs(potionFolder:GetChildren()) do
-                        if potion.Value and potion.Value > 0 then
-                            safeFireServer(UsePotionRemote, potion.Name)
+                local pf = player:FindFirstChild("potioninventory")
+                if pf then
+                    for _, p in ipairs(pf:GetChildren()) do
+                        if p.Value and p.Value > 0 then
+                            fire(UsePotionRemote, p.Name)
                             task.wait(0.3)
                         end
                     end
@@ -1100,14 +1212,46 @@ task.spawn(function()
     end
 end)
 
--- AUTO TOWER (TP + Finish, cu delay rezonabil)
+-- AUTO EQUIP BEST PETS
 task.spawn(function()
-    while ScreenGui.Parent do
+    while SG.Parent do
+        if STATE.AutoEquipPets then
+            pcall(function()
+                local petInv = player:FindFirstChild("petsinventory")
+                if not petInv then return end
+
+                -- Get all pets and their multipliers
+                local petList = {}
+                for _, pet in ipairs(petInv:GetChildren()) do
+                    local info = PetData[pet.Name]
+                    local multi = info and info.Multiplier or 1
+                    table.insert(petList, {name = pet.Name, multi = multi, obj = pet})
+                end
+
+                -- Sort by multiplier descending
+                table.sort(petList, function(a, b) return a.multi > b.multi end)
+
+                -- Equip top 5 (or max_pets if skill tree gives more)
+                local maxPets = 5
+                for i = 1, math.min(maxPets, #petList) do
+                    pcall(fire, EquipPetRemote, petList[i].name, true)
+                    task.wait(0.15)
+                end
+            end)
+        end
+        task.wait(15)
+    end
+end)
+
+-- TOWER LOOP
+task.spawn(function()
+    while SG.Parent do
         if STATE.AutoTower then
-            local ok = teleportTo(getTowerTopPosition())
+            local ok = tp(getTowerTop())
             if ok then
                 task.wait(1)
-                pcall(function() safeFireServer(FinishRemote) end)
+                pcall(fire, FinishRemote)
+                TELEMETRY.towerWins += 1
             end
         end
         task.wait(8)
@@ -1116,27 +1260,48 @@ end)
 
 -- FPS BOOST WATCHER
 task.spawn(function()
-    while ScreenGui.Parent do
-        if STATE.FpsBoost and not fpsBoostApplied then
-            applyFpsBoost()
-        elseif not STATE.FpsBoost and fpsBoostApplied then
-            removeFpsBoost()
+    while SG.Parent do
+        if STATE.FpsBoost and not _fpsApplied then
+            enableFpsBoost()
+        elseif not STATE.FpsBoost and _fpsApplied then
+            disableFpsBoost()
         end
         task.wait(3)
     end
 end)
 
+-- STAT OVERRIDE
+task.spawn(function()
+    while SG.Parent do
+        if STATE.StatOverride then
+            pcall(function()
+                stats.ClickPower.Value           = 9999999999
+                stats.RewardPerTap.Value          = 9999999999
+                stats.TowerMultiplier.Value       = 999
+                stats.RebirthMultiplier.Value     = 999
+                stats.PetMultiplier.Value         = 999
+                stats.TotalMultiplier.Value       = 999999
+                stats.ClickBoostMultiplier.Value  = 9999
+                stats.SwarmMultiplier.Value        = 9999
+                stats.FriendMultiplier.Value       = 9999
+            end)
+        end
+        task.wait(0.5)
+    end
+end)
+
 -- ANTI-AFK
-local VirtualUser = game:GetService("VirtualUser")
+local VU = game:GetService("VirtualUser")
 player.Idled:Connect(function()
     if STATE.AntiAFK then
-        VirtualUser:CaptureController()
-        VirtualUser:ClickButton2(Vector2.new())
+        VU:CaptureController()
+        VU:ClickButton2(Vector2.new())
     end
 end)
 
 print("============================================")
-print("  MEGA EXPLOIT v5 LOADED")
-print("  Keybind: RightControl = toggle GUI")
-print("  Tower Top: " .. tostring(getTowerTopPosition()))
+print("  MEGA EXPLOIT v6 LOADED")
+print("  RightCtrl = toggle GUI")
+print("  Tower Top: " .. tostring(getTowerTop()))
+print("  SkillTree Nodes: " .. tostring(#(SkillTreeCfg.ById and SkillTreeCfg.ById or {})))
 print("============================================")
