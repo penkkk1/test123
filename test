@@ -51,6 +51,7 @@ local STATE = {
     AutoTower       = false,
     LuckyBlock      = false,
     AntiAFK         = true,   -- on by default
+    FpsBoost        = false,
 }
 
 -- =====================================================
@@ -548,6 +549,9 @@ makeSection("PETS & ITEMS")
 makeToggle("Auto Hatch", "AutoHatch", "Hatch toate ouale")
 makeToggle("Lucky Block Spam", "LuckyBlock", "Deschide lucky blocks")
 
+makeSection("PERFORMANCE")
+makeToggle("FPS Boost", "FpsBoost", "Sterge particule, shadows, efecte")
+
 makeSection("TOWER & MISC")
 makeToggle("Auto Tower TP", "AutoTower", "Teleport la TowerEnd la 5s")
 makeToggle("Anti-AFK", "AntiAFK", "Previne kick-ul AFK")
@@ -639,6 +643,149 @@ task.spawn(function()
 end)
 
 -- =====================================================
+
+-- =====================================================
+--  FPS BOOST ENGINE
+--  Sterge particule, texturi, shadows, effects etc.
+--  Reduce MASIV load-ul GPU/CPU pt a suporta click spam
+-- =====================================================
+
+local Lighting = game:GetService("Lighting")
+local StarterGui = game:GetService("StarterGui")
+
+local fpsBoostApplied = false
+
+local function applyFpsBoost()
+    if fpsBoostApplied then return end
+    fpsBoostApplied = true
+
+    -- 1. Lighting simplu
+    pcall(function()
+        Lighting.GlobalShadows = false
+        Lighting.FogEnd = 9e9
+        Lighting.Brightness = 1
+        Lighting.Technology = Enum.Technology.Compatibility  -- cel mai usor
+        -- Sterge post-processing effects
+        for _, child in ipairs(Lighting:GetChildren()) do
+            if child:IsA("BlurEffect") or child:IsA("SunRaysEffect") or
+               child:IsA("BloomEffect") or child:IsA("ColorCorrectionEffect") or
+               child:IsA("DepthOfFieldEffect") or child:IsA("Atmosphere") then
+                child:Destroy()
+            end
+        end
+    end)
+
+    -- 2. Sterge TOATE particulele din workspace
+    pcall(function()
+        for _, desc in ipairs(workspace:GetDescendants()) do
+            pcall(function()
+                if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or
+                   desc:IsA("Beam") or desc:IsA("Smoke") or
+                   desc:IsA("Fire") or desc:IsA("Sparkles") or
+                   desc:IsA("PointLight") or desc:IsA("SpotLight") or
+                   desc:IsA("SurfaceLight") then
+                    desc.Enabled = false
+                    -- sau desc:Destroy() daca vrei mai agresiv
+                end
+            end)
+        end
+    end)
+
+    -- 3. Reduce calitatea texturilor si meshurilor
+    pcall(function()
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+    end)
+    pcall(function()
+        sethiddenproperty(Lighting, "Technology", Enum.Technology.Compatibility)
+    end)
+
+    -- 4. Sterge decoratiuni din Lobby/Map
+    pcall(function()
+        local lobby = workspace:FindFirstChild("Lobby")
+        if lobby then
+            for _, desc in ipairs(lobby:GetDescendants()) do
+                pcall(function()
+                    if desc:IsA("Decal") or desc:IsA("Texture") or
+                       desc:IsA("SurfaceAppearance") then
+                        desc:Destroy()
+                    end
+                end)
+            end
+        end
+    end)
+
+    -- 5. Reduce draw distance pt parti indepartate
+    pcall(function()
+        for _, desc in ipairs(workspace:GetDescendants()) do
+            pcall(function()
+                if desc:IsA("BasePart") then
+                    desc.Material = Enum.Material.SmoothPlastic
+                    desc.Reflectance = 0
+                    desc.CastShadow = false
+                end
+            end)
+        end
+    end)
+
+    -- 6. Terrain simplificat
+    pcall(function()
+        workspace.Terrain.WaterWaveSize = 0
+        workspace.Terrain.WaterWaveSpeed = 0
+        workspace.Terrain.WaterReflectance = 0
+        workspace.Terrain.WaterTransparency = 0
+    end)
+
+    -- 7. Disable player character rendering pt altii
+    pcall(function()
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= player and p.Character then
+                pcall(function()
+                    for _, part in ipairs(p.Character:GetDescendants()) do
+                        if part:IsA("BasePart") or part:IsA("Decal") then
+                            part.Transparency = 1
+                        end
+                        if part:IsA("ParticleEmitter") then
+                            part.Enabled = false
+                        end
+                    end
+                end)
+            end
+        end
+    end)
+
+    -- 8. Sterge efectele din PetModels vizibile
+    pcall(function()
+        local clientFollowers = workspace:FindFirstChild("ClientFollowers")
+        if clientFollowers then
+            for _, desc in ipairs(clientFollowers:GetDescendants()) do
+                pcall(function()
+                    if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or
+                       desc:IsA("PointLight") or desc:IsA("Highlight") then
+                        desc.Enabled = false
+                    end
+                end)
+            end
+        end
+    end)
+
+    -- 9. Garbage collect
+    pcall(function()
+        collectgarbage("collect")
+    end)
+
+    print("[FPS BOOST] Toate optimizarile aplicate!")
+end
+
+local function removeFpsBoost()
+    -- Nu putem restaura tot, dar marcam ca dezactivat
+    fpsBoostApplied = false
+    pcall(function()
+        Lighting.GlobalShadows = true
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic
+    end)
+    print("[FPS BOOST] Dezactivat (unele schimbari raman pana la rejoin)")
+end
+
 --  EXPLOIT ENGINES
 -- =====================================================
 
@@ -660,7 +807,8 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
--- METHOD 3: While-loop (fastest possible, no frame sync)
+-- METHOD 3: While-loop (fastest possible, adaptive yield)
+-- Mai inteligent: yield mai des cand clicks/frame e mare
 task.spawn(function()
     local counter = 0
     while ScreenGui.Parent do
@@ -669,15 +817,41 @@ task.spawn(function()
                 pcall(function() ClickAction:FireServer() end)
             end
             counter = counter + 1
-            -- Yield every ~200 iterations to avoid full lockup
-            if counter % 200 == 0 then
+            -- Adaptive yield: cu cat mai multe clicks, yield mai des
+            local yieldEvery = math.max(5, math.floor(500 / math.max(STATE.ClicksPerFrame, 1)))
+            if counter % yieldEvery == 0 then
                 task.wait()
+                -- Garbage collect periodic la load mare
+                if counter % (yieldEvery * 20) == 0 then
+                    pcall(function() collectgarbage("collect") end)
+                end
             end
         else
             task.wait(0.1)
         end
     end
 end)
+
+-- METHOD 4: Spawn MULTIPLE while-loops (x3 throughput)
+for threadNum = 1, 2 do
+    task.spawn(function()
+        local c = 0
+        while ScreenGui.Parent do
+            if STATE.AutoClick and STATE.ClickMethod_WH then
+                for i = 1, STATE.ClicksPerFrame do
+                    pcall(function() ClickAction:FireServer() end)
+                end
+                c = c + 1
+                local yieldEvery = math.max(5, math.floor(500 / math.max(STATE.ClicksPerFrame, 1)))
+                if c % yieldEvery == 0 then
+                    task.wait()
+                end
+            else
+                task.wait(0.1)
+            end
+        end
+    end)
+end
 
 -- ADDVALUE SPAM
 task.spawn(function()
@@ -822,6 +996,46 @@ player.Idled:Connect(function()
         VirtualUser:CaptureController()
         VirtualUser:ClickButton2(Vector2.new())
     end
+end)
+
+
+-- FPS BOOST WATCHER
+task.spawn(function()
+    while ScreenGui.Parent do
+        if STATE.FpsBoost and not fpsBoostApplied then
+            applyFpsBoost()
+        elseif not STATE.FpsBoost and fpsBoostApplied then
+            removeFpsBoost()
+        end
+        -- Re-apply on new instances
+        if STATE.FpsBoost then
+            pcall(function()
+                workspace.DescendantAdded:Wait()
+                -- noop, just catches new items
+            end)
+        end
+        task.wait(2)
+    end
+end)
+
+-- Also catch new descendants to disable particles
+task.spawn(function()
+    workspace.DescendantAdded:Connect(function(desc)
+        if STATE.FpsBoost then
+            task.defer(function()
+                pcall(function()
+                    if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or
+                       desc:IsA("Beam") or desc:IsA("Smoke") or
+                       desc:IsA("Fire") or desc:IsA("Sparkles") then
+                        desc.Enabled = false
+                    end
+                    if desc:IsA("BasePart") then
+                        desc.CastShadow = false
+                    end
+                end)
+            end)
+        end
+    end)
 end)
 
 print("[MEGA EXPLOIT v2] GUI loaded! Toate feature-urile gata.")
