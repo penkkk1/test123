@@ -1,14 +1,14 @@
 --[[
 ============================================================
-  MEGA EXPLOIT SCRIPT + GUI
+  MEGA EXPLOIT v2 - CLICK FOCUS + SETARI AVANSATE
   Place ID: 74369583842836
 
-  GUI cu toggle-uri pentru fiecare feature.
-  Drag & drop, minimize, totul.
+  Clickuri: preseturi 50/100/250/500/1000/CUSTOM per frame
+  + loop paralel fara yield + Heartbeat + RenderStepped
+  = maxim click-uri posibile
 ============================================================
 --]]
 
--- Servicii
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -29,36 +29,33 @@ local PurchaseSkillTreeNode = Remotes:WaitForChild("PurchaseSkillTreeNode")
 local UpgradeSpeed = Remotes:WaitForChild("UpgradeSpeed")
 local RequestSkipRebirth = Remotes:WaitForChild("RequestSkipRebirth")
 
--- Config
 local HatchConfig = require(RS.HatchConfig)
 
 -- =====================================================
---  STATE (toate OFF default, toggle din GUI)
+--  STATE
 -- =====================================================
 local STATE = {
     AutoClick       = false,
+    ClickMethod_HB  = true,   -- Heartbeat loop
+    ClickMethod_RS  = true,   -- RenderStepped loop
+    ClickMethod_WH  = true,   -- While-loop (no yield)
+    ClicksPerFrame  = 50,     -- default, schimbabil din GUI
+
     AddValueSpam    = false,
+    StatOverride    = false,
     AutoRebirth     = false,
     AutoHatch       = false,
     AutoUpgrade     = false,
     AutoSpeed       = false,
     AutoSkillTree   = false,
     AutoTower       = false,
-    StatOverride    = false,
     LuckyBlock      = false,
-    AntiAFK         = false,
-}
-
-local SETTINGS = {
-    ClicksPerFrame  = 50,
-    AddValueAmount  = 999999999,
-    HatchEggId      = "StarterEgg",
+    AntiAFK         = true,   -- on by default
 }
 
 -- =====================================================
---  GUI CREATION
+--  KILL OLD GUI
 -- =====================================================
--- Destroy old GUI if re-executing
 if playerGui:FindFirstChild("MegaExploitGui") then
     playerGui.MegaExploitGui:Destroy()
 end
@@ -69,272 +66,252 @@ ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = playerGui
 
--- Colors
+-- =====================================================
+--  COLORS
+-- =====================================================
 local C = {
-    bg          = Color3.fromRGB(18, 18, 24),
-    topbar      = Color3.fromRGB(25, 25, 35),
-    section     = Color3.fromRGB(28, 28, 40),
-    toggleOff   = Color3.fromRGB(55, 55, 70),
-    toggleOn    = Color3.fromRGB(88, 101, 242),  -- blurple accent
-    text        = Color3.fromRGB(220, 220, 230),
-    textMuted   = Color3.fromRGB(140, 140, 160),
-    border      = Color3.fromRGB(45, 45, 60),
-    red         = Color3.fromRGB(240, 70, 80),
-    green       = Color3.fromRGB(60, 200, 120),
-    orange      = Color3.fromRGB(240, 160, 50),
+    bg          = Color3.fromRGB(15, 15, 22),
+    topbar      = Color3.fromRGB(22, 22, 32),
+    section     = Color3.fromRGB(26, 26, 38),
+    card        = Color3.fromRGB(30, 30, 44),
+    toggleOff   = Color3.fromRGB(50, 50, 65),
+    toggleOn    = Color3.fromRGB(88, 101, 242),
+    btnActive   = Color3.fromRGB(88, 101, 242),
+    btnInactive = Color3.fromRGB(40, 40, 55),
+    text        = Color3.fromRGB(225, 225, 235),
+    textMuted   = Color3.fromRGB(120, 120, 145),
+    textBright  = Color3.fromRGB(255, 255, 255),
+    border      = Color3.fromRGB(42, 42, 58),
+    red         = Color3.fromRGB(235, 65, 75),
+    green       = Color3.fromRGB(55, 195, 115),
+    orange      = Color3.fromRGB(240, 165, 50),
+    cyan        = Color3.fromRGB(50, 200, 220),
 }
 
--- Main Frame
+-- =====================================================
+--  MAIN FRAME
+-- =====================================================
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, 300, 0, 520)
-MainFrame.Position = UDim2.new(0, 20, 0.5, -260)
+MainFrame.Size = UDim2.new(0, 320, 0, 620)
+MainFrame.Position = UDim2.new(0, 16, 0.5, -310)
 MainFrame.BackgroundColor3 = C.bg
 MainFrame.BorderSizePixel = 0
 MainFrame.ClipsDescendants = true
 MainFrame.Parent = ScreenGui
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 
-local mainCorner = Instance.new("UICorner", MainFrame)
-mainCorner.CornerRadius = UDim.new(0, 10)
-
-local mainStroke = Instance.new("UIStroke", MainFrame)
-mainStroke.Color = C.border
-mainStroke.Thickness = 1.5
-mainStroke.Transparency = 0.3
-
--- Drop shadow (fake, dark frame behind)
-local Shadow = Instance.new("Frame")
-Shadow.Name = "Shadow"
-Shadow.Size = UDim2.new(1, 8, 1, 8)
-Shadow.Position = UDim2.new(0, -4, 0, -4)
-Shadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-Shadow.BackgroundTransparency = 0.6
-Shadow.BorderSizePixel = 0
-Shadow.ZIndex = -1
-Shadow.Parent = MainFrame
-Instance.new("UICorner", Shadow).CornerRadius = UDim.new(0, 12)
+local stroke = Instance.new("UIStroke", MainFrame)
+stroke.Color = C.border
+stroke.Thickness = 1
 
 -- =====================================================
---  TOP BAR (drag + title + minimize + close)
+--  TOP BAR
 -- =====================================================
 local TopBar = Instance.new("Frame")
-TopBar.Name = "TopBar"
-TopBar.Size = UDim2.new(1, 0, 0, 38)
+TopBar.Size = UDim2.new(1, 0, 0, 36)
 TopBar.BackgroundColor3 = C.topbar
 TopBar.BorderSizePixel = 0
 TopBar.Parent = MainFrame
 Instance.new("UICorner", TopBar).CornerRadius = UDim.new(0, 10)
 
--- Bottom patch to square off bottom corners of topbar
-local TopBarPatch = Instance.new("Frame")
-TopBarPatch.Size = UDim2.new(1, 0, 0, 12)
-TopBarPatch.Position = UDim2.new(0, 0, 1, -12)
-TopBarPatch.BackgroundColor3 = C.topbar
-TopBarPatch.BorderSizePixel = 0
-TopBarPatch.Parent = TopBar
+local topPatch = Instance.new("Frame")
+topPatch.Size = UDim2.new(1, 0, 0, 10)
+topPatch.Position = UDim2.new(0, 0, 1, -10)
+topPatch.BackgroundColor3 = C.topbar
+topPatch.BorderSizePixel = 0
+topPatch.Parent = TopBar
 
--- Accent line under topbar
-local AccentLine = Instance.new("Frame")
-AccentLine.Size = UDim2.new(1, 0, 0, 2)
-AccentLine.Position = UDim2.new(0, 0, 0, 38)
-AccentLine.BackgroundColor3 = C.toggleOn
-AccentLine.BorderSizePixel = 0
-AccentLine.Parent = MainFrame
+local accentLine = Instance.new("Frame")
+accentLine.Size = UDim2.new(1, 0, 0, 2)
+accentLine.Position = UDim2.new(0, 0, 0, 36)
+accentLine.BackgroundColor3 = C.toggleOn
+accentLine.BorderSizePixel = 0
+accentLine.Parent = MainFrame
 
--- Title
-local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, -80, 1, 0)
-Title.Position = UDim2.new(0, 14, 0, 0)
-Title.BackgroundTransparency = 1
-Title.Text = "MEGA EXPLOIT"
-Title.TextColor3 = C.text
-Title.Font = Enum.Font.GothamBold
-Title.TextSize = 15
-Title.TextXAlignment = Enum.TextXAlignment.Left
-Title.Parent = TopBar
+local titleLbl = Instance.new("TextLabel")
+titleLbl.Size = UDim2.new(1, -80, 1, 0)
+titleLbl.Position = UDim2.new(0, 12, 0, 0)
+titleLbl.BackgroundTransparency = 1
+titleLbl.Text = "MEGA EXPLOIT v2"
+titleLbl.TextColor3 = C.text
+titleLbl.Font = Enum.Font.GothamBold
+titleLbl.TextSize = 14
+titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+titleLbl.Parent = TopBar
 
--- Status indicator dot
-local StatusDot = Instance.new("Frame")
-StatusDot.Size = UDim2.new(0, 8, 0, 8)
-StatusDot.Position = UDim2.new(0, 128, 0.5, -4)
-StatusDot.BackgroundColor3 = C.green
-StatusDot.BorderSizePixel = 0
-StatusDot.Parent = TopBar
-Instance.new("UICorner", StatusDot).CornerRadius = UDim.new(1, 0)
+local statusDot = Instance.new("Frame")
+statusDot.Size = UDim2.new(0, 7, 0, 7)
+statusDot.Position = UDim2.new(0, 138, 0.5, -3)
+statusDot.BackgroundColor3 = C.green
+statusDot.BorderSizePixel = 0
+statusDot.Parent = TopBar
+Instance.new("UICorner", statusDot).CornerRadius = UDim.new(1, 0)
 
--- Minimize button
-local MinBtn = Instance.new("TextButton")
-MinBtn.Size = UDim2.new(0, 28, 0, 28)
-MinBtn.Position = UDim2.new(1, -62, 0, 5)
-MinBtn.BackgroundColor3 = C.section
-MinBtn.BorderSizePixel = 0
-MinBtn.Text = "-"
-MinBtn.TextColor3 = C.textMuted
-MinBtn.Font = Enum.Font.GothamBold
-MinBtn.TextSize = 18
-MinBtn.Parent = TopBar
-Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0, 6)
+-- Minimize
+local minBtn = Instance.new("TextButton")
+minBtn.Size = UDim2.new(0, 26, 0, 26)
+minBtn.Position = UDim2.new(1, -58, 0, 5)
+minBtn.BackgroundColor3 = C.card
+minBtn.BorderSizePixel = 0
+minBtn.Text = "-"
+minBtn.TextColor3 = C.textMuted
+minBtn.Font = Enum.Font.GothamBold
+minBtn.TextSize = 16
+minBtn.Parent = TopBar
+Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 6)
 
--- Close button
-local CloseBtn = Instance.new("TextButton")
-CloseBtn.Size = UDim2.new(0, 28, 0, 28)
-CloseBtn.Position = UDim2.new(1, -32, 0, 5)
-CloseBtn.BackgroundColor3 = C.red
-CloseBtn.BackgroundTransparency = 0.7
-CloseBtn.BorderSizePixel = 0
-CloseBtn.Text = "X"
-CloseBtn.TextColor3 = C.text
-CloseBtn.Font = Enum.Font.GothamBold
-CloseBtn.TextSize = 13
-CloseBtn.Parent = TopBar
-Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 6)
+-- Close
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 26, 0, 26)
+closeBtn.Position = UDim2.new(1, -30, 0, 5)
+closeBtn.BackgroundColor3 = C.red
+closeBtn.BackgroundTransparency = 0.65
+closeBtn.BorderSizePixel = 0
+closeBtn.Text = "X"
+closeBtn.TextColor3 = C.text
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 12
+closeBtn.Parent = TopBar
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
 
 -- =====================================================
---  SCROLL FRAME (content area)
+--  CONTENT SCROLL
 -- =====================================================
-local ContentFrame = Instance.new("ScrollingFrame")
-ContentFrame.Name = "Content"
-ContentFrame.Size = UDim2.new(1, -16, 1, -52)
-ContentFrame.Position = UDim2.new(0, 8, 0, 44)
-ContentFrame.BackgroundTransparency = 1
-ContentFrame.BorderSizePixel = 0
-ContentFrame.ScrollBarThickness = 3
-ContentFrame.ScrollBarImageColor3 = C.toggleOn
-ContentFrame.CanvasSize = UDim2.new(0, 0, 0, 0) -- auto
-ContentFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
-ContentFrame.Parent = MainFrame
+local Content = Instance.new("ScrollingFrame")
+Content.Name = "Content"
+Content.Size = UDim2.new(1, -12, 1, -48)
+Content.Position = UDim2.new(0, 6, 0, 42)
+Content.BackgroundTransparency = 1
+Content.BorderSizePixel = 0
+Content.ScrollBarThickness = 3
+Content.ScrollBarImageColor3 = C.toggleOn
+Content.CanvasSize = UDim2.new(0, 0, 0, 0)
+Content.AutomaticCanvasSize = Enum.AutomaticSize.Y
+Content.Parent = MainFrame
 
-local ContentLayout = Instance.new("UIListLayout", ContentFrame)
-ContentLayout.SortOrder = Enum.SortOrder.LayoutOrder
-ContentLayout.Padding = UDim.new(0, 6)
+local layout = Instance.new("UIListLayout", Content)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Padding = UDim.new(0, 5)
 
 -- =====================================================
---  HELPER: Create Toggle Row
+--  GUI HELPERS
 -- =====================================================
-local toggleButtons = {}
-
-local function createSection(title, layoutOrder)
-    local sec = Instance.new("TextLabel")
-    sec.Size = UDim2.new(1, 0, 0, 24)
-    sec.BackgroundTransparency = 1
-    sec.Text = string.upper(title)
-    sec.TextColor3 = C.textMuted
-    sec.Font = Enum.Font.GothamBold
-    sec.TextSize = 10
-    sec.TextXAlignment = Enum.TextXAlignment.Left
-    sec.LayoutOrder = layoutOrder
-    sec.Parent = ContentFrame
-    return sec
+local order = 0
+local function nextOrder()
+    order = order + 1
+    return order
 end
 
-local function createToggle(label, stateKey, description, layoutOrder)
-    local row = Instance.new("Frame")
-    row.Size = UDim2.new(1, 0, 0, 42)
-    row.BackgroundColor3 = C.section
-    row.BorderSizePixel = 0
-    row.LayoutOrder = layoutOrder
-    row.Parent = ContentFrame
-    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
-
-    -- Label
+local function makeSection(title)
     local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, -70, 0, 20)
-    lbl.Position = UDim2.new(0, 12, 0, 4)
+    lbl.Size = UDim2.new(1, 0, 0, 22)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = "  " .. string.upper(title)
+    lbl.TextColor3 = C.textMuted
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextSize = 10
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.LayoutOrder = nextOrder()
+    lbl.Parent = Content
+end
+
+local function makeToggle(label, stateKey, desc)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, -4, 0, desc and 44 or 34)
+    row.BackgroundColor3 = C.card
+    row.BorderSizePixel = 0
+    row.LayoutOrder = nextOrder()
+    row.Parent = Content
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 7)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -65, 0, 18)
+    lbl.Position = UDim2.new(0, 10, 0, desc and 4 or 8)
     lbl.BackgroundTransparency = 1
     lbl.Text = label
     lbl.TextColor3 = C.text
     lbl.Font = Enum.Font.GothamSemibold
-    lbl.TextSize = 13
+    lbl.TextSize = 12
     lbl.TextXAlignment = Enum.TextXAlignment.Left
     lbl.Parent = row
 
-    -- Description
-    if description then
-        local desc = Instance.new("TextLabel")
-        desc.Size = UDim2.new(1, -70, 0, 14)
-        desc.Position = UDim2.new(0, 12, 0, 24)
-        desc.BackgroundTransparency = 1
-        desc.Text = description
-        desc.TextColor3 = C.textMuted
-        desc.Font = Enum.Font.Gotham
-        desc.TextSize = 10
-        desc.TextXAlignment = Enum.TextXAlignment.Left
-        desc.Parent = row
+    if desc then
+        local d = Instance.new("TextLabel")
+        d.Size = UDim2.new(1, -65, 0, 14)
+        d.Position = UDim2.new(0, 10, 0, 24)
+        d.BackgroundTransparency = 1
+        d.Text = desc
+        d.TextColor3 = C.textMuted
+        d.Font = Enum.Font.Gotham
+        d.TextSize = 9
+        d.TextXAlignment = Enum.TextXAlignment.Left
+        d.Parent = row
     end
 
-    -- Toggle track
     local track = Instance.new("Frame")
-    track.Size = UDim2.new(0, 42, 0, 22)
-    track.Position = UDim2.new(1, -54, 0.5, -11)
-    track.BackgroundColor3 = C.toggleOff
+    track.Size = UDim2.new(0, 40, 0, 20)
+    track.Position = UDim2.new(1, -50, 0.5, -10)
+    track.BackgroundColor3 = STATE[stateKey] and C.toggleOn or C.toggleOff
     track.BorderSizePixel = 0
     track.Parent = row
     Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
 
-    -- Toggle knob
     local knob = Instance.new("Frame")
-    knob.Size = UDim2.new(0, 18, 0, 18)
-    knob.Position = UDim2.new(0, 2, 0, 2)
-    knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    knob.Size = UDim2.new(0, 16, 0, 16)
+    knob.Position = STATE[stateKey] and UDim2.new(1, -18, 0, 2) or UDim2.new(0, 2, 0, 2)
+    knob.BackgroundColor3 = C.textBright
     knob.BorderSizePixel = 0
     knob.Parent = track
     Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
 
-    -- Click detector (invisible button over track)
-    local clickArea = Instance.new("TextButton")
-    clickArea.Size = UDim2.new(1, 0, 1, 0)
-    clickArea.BackgroundTransparency = 1
-    clickArea.Text = ""
-    clickArea.Parent = track
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 1, 0)
+    btn.BackgroundTransparency = 1
+    btn.Text = ""
+    btn.Parent = track
 
-    local function updateVisual(on)
-        local targetTrackColor = on and C.toggleOn or C.toggleOff
-        local targetKnobPos = on and UDim2.new(1, -20, 0, 2) or UDim2.new(0, 2, 0, 2)
-        TweenService:Create(track, TweenInfo.new(0.2), {BackgroundColor3 = targetTrackColor}):Play()
-        TweenService:Create(knob, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = targetKnobPos}):Play()
-    end
-
-    clickArea.MouseButton1Click:Connect(function()
+    btn.MouseButton1Click:Connect(function()
         STATE[stateKey] = not STATE[stateKey]
-        updateVisual(STATE[stateKey])
+        local on = STATE[stateKey]
+        TweenService:Create(track, TweenInfo.new(0.15), {
+            BackgroundColor3 = on and C.toggleOn or C.toggleOff
+        }):Play()
+        TweenService:Create(knob, TweenInfo.new(0.15, Enum.EasingStyle.Quad), {
+            Position = on and UDim2.new(1, -18, 0, 2) or UDim2.new(0, 2, 0, 2)
+        }):Play()
     end)
-
-    -- Initial state
-    updateVisual(STATE[stateKey])
-
-    toggleButtons[stateKey] = {track = track, knob = knob, update = updateVisual}
-    return row
 end
 
-local function createInfoRow(label, valueText, layoutOrder)
+local function makeInfoRow(label, initVal)
     local row = Instance.new("Frame")
-    row.Size = UDim2.new(1, 0, 0, 28)
-    row.BackgroundColor3 = C.section
+    row.Size = UDim2.new(1, -4, 0, 26)
+    row.BackgroundColor3 = C.card
     row.BorderSizePixel = 0
-    row.LayoutOrder = layoutOrder
-    row.Parent = ContentFrame
-    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
+    row.LayoutOrder = nextOrder()
+    row.Parent = Content
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 5)
 
     local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(0.5, -8, 1, 0)
+    lbl.Size = UDim2.new(0.5, 0, 1, 0)
     lbl.Position = UDim2.new(0, 10, 0, 0)
     lbl.BackgroundTransparency = 1
     lbl.Text = label
     lbl.TextColor3 = C.textMuted
     lbl.Font = Enum.Font.Gotham
-    lbl.TextSize = 11
+    lbl.TextSize = 10
     lbl.TextXAlignment = Enum.TextXAlignment.Left
     lbl.Parent = row
 
     local val = Instance.new("TextLabel")
-    val.Name = "Value"
-    val.Size = UDim2.new(0.5, -8, 1, 0)
+    val.Name = "Val"
+    val.Size = UDim2.new(0.5, -10, 1, 0)
     val.Position = UDim2.new(0.5, 0, 0, 0)
     val.BackgroundTransparency = 1
-    val.Text = valueText
+    val.Text = initVal
     val.TextColor3 = C.orange
     val.Font = Enum.Font.GothamBold
-    val.TextSize = 12
+    val.TextSize = 11
     val.TextXAlignment = Enum.TextXAlignment.Right
     val.Parent = row
 
@@ -342,51 +319,258 @@ local function createInfoRow(label, valueText, layoutOrder)
 end
 
 -- =====================================================
---  BUILD THE GUI CONTENT
+--  CLICK SPEED SELECTOR (preseturi + custom)
+-- =====================================================
+local function makeClickSpeedPanel()
+    local panel = Instance.new("Frame")
+    panel.Size = UDim2.new(1, -4, 0, 105)
+    panel.BackgroundColor3 = C.card
+    panel.BorderSizePixel = 0
+    panel.LayoutOrder = nextOrder()
+    panel.Parent = Content
+    Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 7)
+
+    -- Title
+    local t = Instance.new("TextLabel")
+    t.Size = UDim2.new(1, 0, 0, 20)
+    t.Position = UDim2.new(0, 10, 0, 4)
+    t.BackgroundTransparency = 1
+    t.Text = "CLICK SPEED (per frame)"
+    t.TextColor3 = C.text
+    t.Font = Enum.Font.GothamSemibold
+    t.TextSize = 11
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    t.Parent = panel
+
+    -- Preset buttons
+    local presets = {10, 50, 100, 250, 500, 1000}
+    local presetBtns = {}
+    local btnWidth = math.floor((320 - 12 - (#presets - 1) * 4) / #presets)
+
+    for i, val in ipairs(presets) do
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(0, btnWidth, 0, 26)
+        b.Position = UDim2.new(0, 6 + (i - 1) * (btnWidth + 4), 0, 28)
+        b.BackgroundColor3 = (STATE.ClicksPerFrame == val) and C.btnActive or C.btnInactive
+        b.BorderSizePixel = 0
+        b.Text = tostring(val)
+        b.TextColor3 = (STATE.ClicksPerFrame == val) and C.textBright or C.textMuted
+        b.Font = Enum.Font.GothamBold
+        b.TextSize = 12
+        b.Parent = panel
+        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
+        presetBtns[i] = b
+    end
+
+    -- Custom input row
+    local customLbl = Instance.new("TextLabel")
+    customLbl.Size = UDim2.new(0, 60, 0, 20)
+    customLbl.Position = UDim2.new(0, 10, 0, 60)
+    customLbl.BackgroundTransparency = 1
+    customLbl.Text = "Custom:"
+    customLbl.TextColor3 = C.textMuted
+    customLbl.Font = Enum.Font.GothamSemibold
+    customLbl.TextSize = 11
+    customLbl.TextXAlignment = Enum.TextXAlignment.Left
+    customLbl.Parent = panel
+
+    local customBox = Instance.new("TextBox")
+    customBox.Size = UDim2.new(0, 80, 0, 26)
+    customBox.Position = UDim2.new(0, 72, 0, 58)
+    customBox.BackgroundColor3 = C.section
+    customBox.BorderSizePixel = 0
+    customBox.Text = tostring(STATE.ClicksPerFrame)
+    customBox.TextColor3 = C.cyan
+    customBox.PlaceholderText = "nr..."
+    customBox.PlaceholderColor3 = C.toggleOff
+    customBox.Font = Enum.Font.GothamBold
+    customBox.TextSize = 13
+    customBox.ClearTextOnFocus = false
+    customBox.Parent = panel
+    Instance.new("UICorner", customBox).CornerRadius = UDim.new(0, 5)
+    local boxStroke = Instance.new("UIStroke", customBox)
+    boxStroke.Color = C.border
+    boxStroke.Thickness = 1
+
+    local applyBtn = Instance.new("TextButton")
+    applyBtn.Size = UDim2.new(0, 60, 0, 26)
+    applyBtn.Position = UDim2.new(0, 158, 0, 58)
+    applyBtn.BackgroundColor3 = C.toggleOn
+    applyBtn.BorderSizePixel = 0
+    applyBtn.Text = "APPLY"
+    applyBtn.TextColor3 = C.textBright
+    applyBtn.Font = Enum.Font.GothamBold
+    applyBtn.TextSize = 11
+    applyBtn.Parent = panel
+    Instance.new("UICorner", applyBtn).CornerRadius = UDim.new(0, 5)
+
+    -- Current display
+    local currentLbl = Instance.new("TextLabel")
+    currentLbl.Name = "CurrentSpeed"
+    currentLbl.Size = UDim2.new(0, 80, 0, 20)
+    currentLbl.Position = UDim2.new(1, -88, 0, 62)
+    currentLbl.BackgroundTransparency = 1
+    currentLbl.Text = STATE.ClicksPerFrame .. "/frame"
+    currentLbl.TextColor3 = C.green
+    currentLbl.Font = Enum.Font.GothamBold
+    currentLbl.TextSize = 12
+    currentLbl.TextXAlignment = Enum.TextXAlignment.Right
+    currentLbl.Parent = panel
+
+    -- Warn label
+    local warnLbl = Instance.new("TextLabel")
+    warnLbl.Size = UDim2.new(1, -12, 0, 14)
+    warnLbl.Position = UDim2.new(0, 6, 1, -16)
+    warnLbl.BackgroundTransparency = 1
+    warnLbl.Text = "> 500 poate lag-ui! 1000+ = risc de crash"
+    warnLbl.TextColor3 = C.red
+    warnLbl.Font = Enum.Font.Gotham
+    warnLbl.TextSize = 9
+    warnLbl.TextXAlignment = Enum.TextXAlignment.Left
+    warnLbl.Parent = panel
+
+    local function setSpeed(val)
+        val = math.clamp(val, 1, 10000)
+        STATE.ClicksPerFrame = val
+        customBox.Text = tostring(val)
+        currentLbl.Text = val .. "/frame"
+        for i, b in ipairs(presetBtns) do
+            local isActive = (presets[i] == val)
+            TweenService:Create(b, TweenInfo.new(0.1), {
+                BackgroundColor3 = isActive and C.btnActive or C.btnInactive
+            }):Play()
+            b.TextColor3 = isActive and C.textBright or C.textMuted
+        end
+    end
+
+    for i, b in ipairs(presetBtns) do
+        b.MouseButton1Click:Connect(function()
+            setSpeed(presets[i])
+        end)
+    end
+
+    applyBtn.MouseButton1Click:Connect(function()
+        local n = tonumber(customBox.Text)
+        if n then
+            setSpeed(math.floor(n))
+        end
+    end)
+
+    customBox.FocusLost:Connect(function(enterPressed)
+        if enterPressed then
+            local n = tonumber(customBox.Text)
+            if n then setSpeed(math.floor(n)) end
+        end
+    end)
+end
+
+-- =====================================================
+--  CLICK METHODS PANEL
+-- =====================================================
+local function makeClickMethodsPanel()
+    local panel = Instance.new("Frame")
+    panel.Size = UDim2.new(1, -4, 0, 52)
+    panel.BackgroundColor3 = C.card
+    panel.BorderSizePixel = 0
+    panel.LayoutOrder = nextOrder()
+    panel.Parent = Content
+    Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 7)
+
+    local t = Instance.new("TextLabel")
+    t.Size = UDim2.new(1, 0, 0, 18)
+    t.Position = UDim2.new(0, 10, 0, 3)
+    t.BackgroundTransparency = 1
+    t.Text = "METODE CLICK (activeaza mai multe = mai rapid)"
+    t.TextColor3 = C.textMuted
+    t.Font = Enum.Font.GothamBold
+    t.TextSize = 9
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    t.Parent = panel
+
+    local methods = {
+        {key = "ClickMethod_HB", label = "Heartbeat"},
+        {key = "ClickMethod_RS", label = "Render"},
+        {key = "ClickMethod_WH", label = "While-Loop"},
+    }
+
+    for i, m in ipairs(methods) do
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(0, 90, 0, 24)
+        b.Position = UDim2.new(0, 6 + (i-1) * 96, 0, 24)
+        b.BackgroundColor3 = STATE[m.key] and C.green or C.btnInactive
+        b.BorderSizePixel = 0
+        b.Text = m.label
+        b.TextColor3 = STATE[m.key] and C.textBright or C.textMuted
+        b.Font = Enum.Font.GothamBold
+        b.TextSize = 11
+        b.Parent = panel
+        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
+
+        b.MouseButton1Click:Connect(function()
+            STATE[m.key] = not STATE[m.key]
+            TweenService:Create(b, TweenInfo.new(0.12), {
+                BackgroundColor3 = STATE[m.key] and C.green or C.btnInactive
+            }):Play()
+            b.TextColor3 = STATE[m.key] and C.textBright or C.textMuted
+        end)
+    end
+end
+
+-- =====================================================
+--  BUILD GUI
 -- =====================================================
 
--- STATS section
-createSection("STATS LIVE", 1)
-local clicksVal = createInfoRow("Clicks", tostring(clickerStats.Clicks.Value), 2)
-local multiVal = createInfoRow("Total Multi", string.format("%.1fx", clickerStats.TotalMultiplier.Value), 3)
-local towerVal = createInfoRow("Tower Multi", string.format("%.1fx", clickerStats.TowerMultiplier.Value), 4)
-local rebirthVal = createInfoRow("Rebirths", tostring(clickerStats.RebirthCount.Value), 5)
+-- Stats
+makeSection("STATS LIVE")
+local clicksDisp = makeInfoRow("Clicks", tostring(clickerStats.Clicks.Value))
+local multiDisp = makeInfoRow("Total Multi", string.format("%.1fx", clickerStats.TotalMultiplier.Value))
+local towerDisp = makeInfoRow("Tower Multi", string.format("%.1fx", clickerStats.TowerMultiplier.Value))
+local rebirthDisp = makeInfoRow("Rebirths", tostring(clickerStats.RebirthCount.Value))
 
--- CLICKING section
-createSection("CLICKING", 10)
-createToggle("Auto Click", "AutoClick", "50 clicks/frame (sub 1ms)", 11)
-createToggle("AddValue Spam", "AddValueSpam", "Spam remote cu 999M", 12)
-createToggle("Stat Override", "StatOverride", "Forteaza multipliers maxim", 13)
+-- Click section
+makeSection("AUTO CLICK")
+makeToggle("Auto Click ON/OFF", "AutoClick", "Master switch pt click spam")
+makeClickSpeedPanel()
+makeClickMethodsPanel()
 
--- PROGRESSION section
-createSection("PROGRESSION", 20)
-createToggle("Auto Rebirth", "AutoRebirth", "Rebirth instant cand e posibil", 21)
-createToggle("Auto Upgrade", "AutoUpgrade", "ClickPower + ClickMulti", 22)
-createToggle("Auto Speed", "AutoSpeed", "Upgrade speed non-stop", 23)
-createToggle("Auto Skill Tree", "AutoSkillTree", "Cumpara toate nodurile", 24)
+-- Other exploits
+makeSection("VALUE EXPLOITS")
+makeToggle("AddValue Spam", "AddValueSpam", "Spam AddValue remote cu 999M")
+makeToggle("Stat Override", "StatOverride", "Forteaza multipliers la MAX local")
 
--- PETS & ITEMS section
-createSection("PETS & ITEMS", 30)
-createToggle("Auto Hatch", "AutoHatch", "Hatch toate ouale automat", 31)
-createToggle("Lucky Block", "LuckyBlock", "Deschide lucky blocks", 32)
+makeSection("AUTO PROGRESSION")
+makeToggle("Auto Rebirth", "AutoRebirth", "Rebirth instant cand posibil")
+makeToggle("Auto Upgrade", "AutoUpgrade", "ClickPower + ClickMulti auto")
+makeToggle("Auto Speed", "AutoSpeed", "Upgrade speed non-stop")
+makeToggle("Auto Skill Tree", "AutoSkillTree", "Cumpara toate nodurile")
 
--- TOWER & MISC section
-createSection("TOWER & MISC", 40)
-createToggle("Auto Tower", "AutoTower", "TP la TowerEnd, reward instant", 41)
-createToggle("Anti-AFK", "AntiAFK", "Previne kick-ul", 42)
+makeSection("PETS & ITEMS")
+makeToggle("Auto Hatch", "AutoHatch", "Hatch toate ouale")
+makeToggle("Lucky Block Spam", "LuckyBlock", "Deschide lucky blocks")
+
+makeSection("TOWER & MISC")
+makeToggle("Auto Tower TP", "AutoTower", "Teleport la TowerEnd la 5s")
+makeToggle("Anti-AFK", "AntiAFK", "Previne kick-ul AFK")
 
 -- TP Button
 local tpBtn = Instance.new("TextButton")
-tpBtn.Size = UDim2.new(1, 0, 0, 36)
+tpBtn.Size = UDim2.new(1, -4, 0, 34)
 tpBtn.BackgroundColor3 = C.toggleOn
 tpBtn.BorderSizePixel = 0
-tpBtn.Text = "TELEPORT LA TOWER"
-tpBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+tpBtn.Text = "TELEPORT LA TOWER ACUM"
+tpBtn.TextColor3 = C.textBright
 tpBtn.Font = Enum.Font.GothamBold
-tpBtn.TextSize = 13
-tpBtn.LayoutOrder = 43
-tpBtn.Parent = ContentFrame
-Instance.new("UICorner", tpBtn).CornerRadius = UDim.new(0, 8)
+tpBtn.TextSize = 12
+tpBtn.LayoutOrder = nextOrder()
+tpBtn.Parent = Content
+Instance.new("UICorner", tpBtn).CornerRadius = UDim.new(0, 7)
+
+-- Spacer
+local spacer = Instance.new("Frame")
+spacer.Size = UDim2.new(1, 0, 0, 10)
+spacer.BackgroundTransparency = 1
+spacer.LayoutOrder = nextOrder()
+spacer.Parent = Content
 
 -- =====================================================
 --  DRAGGING
@@ -405,10 +589,10 @@ end)
 UIS.InputChanged:Connect(function(input)
     if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or
                      input.UserInputType == Enum.UserInputType.Touch) then
-        local delta = input.Position - dragStart
+        local d = input.Position - dragStart
         MainFrame.Position = UDim2.new(
-            startPos.X.Scale, startPos.X.Offset + delta.X,
-            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            startPos.X.Scale, startPos.X.Offset + d.X,
+            startPos.Y.Scale, startPos.Y.Offset + d.Y
         )
     end
 end)
@@ -426,53 +610,72 @@ end)
 local minimized = false
 local fullSize = MainFrame.Size
 
-MinBtn.MouseButton1Click:Connect(function()
+minBtn.MouseButton1Click:Connect(function()
     minimized = not minimized
-    if minimized then
-        TweenService:Create(MainFrame, TweenInfo.new(0.25, Enum.EasingStyle.Quad), {
-            Size = UDim2.new(0, 300, 0, 40)
-        }):Play()
-        MinBtn.Text = "+"
-    else
-        TweenService:Create(MainFrame, TweenInfo.new(0.25, Enum.EasingStyle.Quad), {
-            Size = fullSize
-        }):Play()
-        MinBtn.Text = "-"
-    end
+    TweenService:Create(MainFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+        Size = minimized and UDim2.new(0, 320, 0, 38) or fullSize
+    }):Play()
+    minBtn.Text = minimized and "+" or "-"
 end)
 
-CloseBtn.MouseButton1Click:Connect(function()
-    -- Turn off everything
-    for k, _ in pairs(STATE) do
-        STATE[k] = false
-    end
+closeBtn.MouseButton1Click:Connect(function()
+    for k in pairs(STATE) do STATE[k] = false end
     ScreenGui:Destroy()
 end)
 
 -- =====================================================
---  LIVE STATS UPDATE
+--  LIVE STATS
 -- =====================================================
 task.spawn(function()
     while ScreenGui.Parent do
         pcall(function()
-            clicksVal.Text = tostring(clickerStats.Clicks.Value)
-            multiVal.Text = string.format("%.1fx", clickerStats.TotalMultiplier.Value)
-            towerVal.Text = string.format("%.1fx", clickerStats.TowerMultiplier.Value)
-            rebirthVal.Text = tostring(clickerStats.RebirthCount.Value)
+            clicksDisp.Text = tostring(clickerStats.Clicks.Value)
+            multiDisp.Text = string.format("%.1fx", clickerStats.TotalMultiplier.Value)
+            towerDisp.Text = string.format("%.1fx", clickerStats.TowerMultiplier.Value)
+            rebirthDisp.Text = tostring(clickerStats.RebirthCount.Value)
         end)
-        task.wait(0.5)
+        task.wait(0.4)
     end
 end)
 
 -- =====================================================
---  EXPLOIT LOOPS
+--  EXPLOIT ENGINES
 -- =====================================================
 
--- AUTO CLICK
+-- METHOD 1: Heartbeat (60Hz)
 RunService.Heartbeat:Connect(function()
-    if not STATE.AutoClick then return end
-    for i = 1, SETTINGS.ClicksPerFrame do
-        pcall(function() ClickAction:FireServer() end)
+    if STATE.AutoClick and STATE.ClickMethod_HB then
+        for i = 1, STATE.ClicksPerFrame do
+            pcall(function() ClickAction:FireServer() end)
+        end
+    end
+end)
+
+-- METHOD 2: RenderStepped (60Hz, fires before frame render)
+RunService.RenderStepped:Connect(function()
+    if STATE.AutoClick and STATE.ClickMethod_RS then
+        for i = 1, STATE.ClicksPerFrame do
+            pcall(function() ClickAction:FireServer() end)
+        end
+    end
+end)
+
+-- METHOD 3: While-loop (fastest possible, no frame sync)
+task.spawn(function()
+    local counter = 0
+    while ScreenGui.Parent do
+        if STATE.AutoClick and STATE.ClickMethod_WH then
+            for i = 1, STATE.ClicksPerFrame do
+                pcall(function() ClickAction:FireServer() end)
+            end
+            counter = counter + 1
+            -- Yield every ~200 iterations to avoid full lockup
+            if counter % 200 == 0 then
+                task.wait()
+            end
+        else
+            task.wait(0.1)
+        end
     end
 end)
 
@@ -481,8 +684,8 @@ task.spawn(function()
     while ScreenGui.Parent do
         if STATE.AddValueSpam then
             pcall(function()
-                AddValue:FireServer("Clicks", SETTINGS.AddValueAmount)
-                AddValue:FireServer(SETTINGS.AddValueAmount)
+                AddValue:FireServer("Clicks", 999999999)
+                AddValue:FireServer(999999999)
             end)
         end
         task.wait()
@@ -505,7 +708,7 @@ task.spawn(function()
                 clickerStats.FriendMultiplier.Value      = 9999
             end)
         end
-        task.wait(0.5)
+        task.wait(0.3)
     end
 end)
 
@@ -514,7 +717,6 @@ task.spawn(function()
     while ScreenGui.Parent do
         if STATE.AutoRebirth then
             pcall(function() RequestSkipRebirth:InvokeServer() end)
-            pcall(function() Remotes.RebirthGranted:FireServer() end)
         end
         task.wait(1)
     end
@@ -545,7 +747,7 @@ task.spawn(function()
                 PurchaseClickUpgrade:InvokeServer("AutoClick")
             end)
         end
-        task.wait(0.5)
+        task.wait(0.4)
     end
 end)
 
@@ -561,26 +763,26 @@ end)
 
 -- AUTO SKILL TREE
 task.spawn(function()
+    local nodes = {
+        "tower_cap_3x", "tower_cap_3.5x", "tower_perm_5",
+        "rebirth_buff_2", "rebirth_discount_5", "rebirth_discount_8",
+        "upgrade_discount_5", "upgrade_discount_8", "upgrade_discount_11",
+        "upgrade_discount_14", "upgrade_discount_20", "upgrade_discount_25",
+        "upgrade_discount_30", "upgrade_discount_36", "upgrade_discount_40",
+        "speed_coil", "gravity_coil", "roll_speed",
+        "golden_pet_chance_1", "golden_pet_chance_2",
+        "rainbow_pet_chance_1", "max_pets_4",
+        "offline_6h", "offline_12h", "offline_24h",
+        "offline_clicks_2", "offline_clicks_33",
+    }
     while ScreenGui.Parent do
         if STATE.AutoSkillTree then
-            local nodes = {
-                "tower_cap_3x", "tower_cap_3.5x", "tower_perm_5",
-                "rebirth_buff_2", "rebirth_discount_5", "rebirth_discount_8",
-                "upgrade_discount_5", "upgrade_discount_8", "upgrade_discount_11",
-                "upgrade_discount_14", "upgrade_discount_20", "upgrade_discount_25",
-                "upgrade_discount_30", "upgrade_discount_36", "upgrade_discount_40",
-                "speed_coil", "gravity_coil", "roll_speed",
-                "golden_pet_chance_1", "golden_pet_chance_2",
-                "rainbow_pet_chance_1", "max_pets_4",
-                "offline_6h", "offline_12h", "offline_24h",
-                "offline_clicks_2", "offline_clicks_33",
-            }
-            for _, nodeId in ipairs(nodes) do
-                pcall(function() PurchaseSkillTreeNode:InvokeServer(nodeId) end)
-                task.wait(0.15)
+            for _, nid in ipairs(nodes) do
+                pcall(function() PurchaseSkillTreeNode:InvokeServer(nid) end)
+                task.wait(0.1)
             end
         end
-        task.wait(5)
+        task.wait(3)
     end
 end)
 
@@ -590,12 +792,12 @@ task.spawn(function()
         if STATE.LuckyBlock then
             pcall(function() Remotes.OpenLuckyBlock:FireServer() end)
         end
-        task.wait(0.5)
+        task.wait(0.4)
     end
 end)
 
--- AUTO TOWER (teleport)
-local function tpToTower()
+-- AUTO TOWER
+local function tpTower()
     pcall(function()
         local te = workspace:FindFirstChild("TowerEnd")
         if te and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
@@ -604,13 +806,11 @@ local function tpToTower()
     end)
 end
 
-tpBtn.MouseButton1Click:Connect(tpToTower)
+tpBtn.MouseButton1Click:Connect(tpTower)
 
 task.spawn(function()
     while ScreenGui.Parent do
-        if STATE.AutoTower then
-            tpToTower()
-        end
+        if STATE.AutoTower then tpTower() end
         task.wait(5)
     end
 end)
@@ -624,7 +824,4 @@ player.Idled:Connect(function()
     end
 end)
 
--- =====================================================
---  DONE
--- =====================================================
-print("[MEGA EXPLOIT] GUI loaded! Drag the panel, toggle features.")
+print("[MEGA EXPLOIT v2] GUI loaded! Toate feature-urile gata.")
