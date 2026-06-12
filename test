@@ -1,11 +1,14 @@
 --[[
 ============================================================
-  MEGA EXPLOIT v2 - CLICK FOCUS + SETARI AVANSATE
+  MEGA EXPLOIT v4 - TOWER FIX + HONEST VALUES
   Place ID: 74369583842836
 
-  Clickuri: preseturi 50/100/250/500/1000/CUSTOM per frame
-  + loop paralel fara yield + Heartbeat + RenderStepped
-  = maxim click-uri posibile
+  SCHIMBARI v4:
+  - Tower TP functioneaza (calculeaza pozitia din config)
+  - Stat Override marcat ca VIZUAL (nu real)
+  - Metode server-side REALE separate
+  - FPS Boost inclus
+  - Click speed preseturi + custom
 ============================================================
 --]]
 
@@ -14,6 +17,7 @@ local RS = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local Lighting = game:GetService("Lighting")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -28,18 +32,20 @@ local RequestHatch = Remotes:WaitForChild("RequestHatch")
 local PurchaseSkillTreeNode = Remotes:WaitForChild("PurchaseSkillTreeNode")
 local UpgradeSpeed = Remotes:WaitForChild("UpgradeSpeed")
 local RequestSkipRebirth = Remotes:WaitForChild("RequestSkipRebirth")
+local FinishRemote = RS:WaitForChild("Finish")
 
 local HatchConfig = require(RS.HatchConfig)
+local ObbyConfig = require(RS.Modules.ObbyConfig)
 
 -- =====================================================
 --  STATE
 -- =====================================================
 local STATE = {
     AutoClick       = false,
-    ClickMethod_HB  = true,   -- Heartbeat loop
-    ClickMethod_RS  = true,   -- RenderStepped loop
-    ClickMethod_WH  = true,   -- While-loop (no yield)
-    ClicksPerFrame  = 50,     -- default, schimbabil din GUI
+    ClickMethod_HB  = true,
+    ClickMethod_RS  = true,
+    ClickMethod_WH  = true,
+    ClicksPerFrame  = 50,
 
     AddValueSpam    = false,
     StatOverride    = false,
@@ -50,9 +56,165 @@ local STATE = {
     AutoSkillTree   = false,
     AutoTower       = false,
     LuckyBlock      = false,
-    AntiAFK         = true,   -- on by default
+    AntiAFK         = true,
     FpsBoost        = false,
 }
+
+-- =====================================================
+--  TOWER POSITION CALCULATOR
+--  ObbyConfig: Origin = 95,0,75 | StageCount=6 | StageHeight=30
+--  Top = Origin.Y + StageCount * StageHeight = 180
+--  Mai incercam si: gasim TowerEnd part direct
+-- =====================================================
+local function getTowerTopPosition()
+    -- Metoda 1: Gaseste TowerEnd part in workspace
+    local towerEnd = workspace:FindFirstChild("TowerEnd", true)
+    if towerEnd and towerEnd:IsA("BasePart") then
+        return towerEnd.Position + Vector3.new(0, 5, 0)
+    end
+
+    -- Metoda 2: Calculeaza din ObbyConfig
+    local origin = ObbyConfig.Origin or Vector3.new(95, 0, 75)
+    local stageCount = ObbyConfig.StageCount or 6
+    local stageHeight = ObbyConfig.StageHeight or 30
+    local topY = origin.Y + (stageCount * stageHeight) + 10
+    return Vector3.new(origin.X, topY, origin.Z)
+
+    -- Metoda 3: fallback hardcodat
+    -- return Vector3.new(95, 195, 75)
+end
+
+local function getTowerBasePosition()
+    local origin = ObbyConfig.Origin or Vector3.new(95, 0, 75)
+    local offset = ObbyConfig.BaseSpawnOffset or Vector3.new(0, 5, -42)
+    return origin + offset
+end
+
+local function teleportTo(pos)
+    local char = player.Character
+    if not char then return false end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    hrp.CFrame = CFrame.new(pos)
+    return true
+end
+
+local function tpToTowerTop()
+    local pos = getTowerTopPosition()
+    local ok = teleportTo(pos)
+    if ok then
+        -- Incearca sa trigger-uie si completion event-ul
+        pcall(function() FinishRemote:FireServer() end)
+        -- Unele jocuri au touchpart detection - trebuie sa stai acolo
+    end
+    return ok
+end
+
+local function tpToTowerBase()
+    return teleportTo(getTowerBasePosition())
+end
+
+-- =====================================================
+--  FPS BOOST ENGINE
+-- =====================================================
+local fpsBoostApplied = false
+
+local function applyFpsBoost()
+    if fpsBoostApplied then return end
+    fpsBoostApplied = true
+
+    pcall(function()
+        Lighting.GlobalShadows = false
+        Lighting.FogEnd = 9e9
+        Lighting.Brightness = 1
+        -- Sterge post-processing
+        for _, child in ipairs(Lighting:GetChildren()) do
+            if child:IsA("BlurEffect") or child:IsA("SunRaysEffect") or
+               child:IsA("BloomEffect") or child:IsA("ColorCorrectionEffect") or
+               child:IsA("DepthOfFieldEffect") or child:IsA("Atmosphere") then
+                child:Destroy()
+            end
+        end
+    end)
+
+    pcall(function()
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+    end)
+
+    -- Disable particles, trails, lights everywhere
+    pcall(function()
+        for _, desc in ipairs(workspace:GetDescendants()) do
+            pcall(function()
+                if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or
+                   desc:IsA("Beam") or desc:IsA("Smoke") or
+                   desc:IsA("Fire") or desc:IsA("Sparkles") then
+                    desc.Enabled = false
+                end
+                if desc:IsA("PointLight") or desc:IsA("SpotLight") or
+                   desc:IsA("SurfaceLight") then
+                    desc.Enabled = false
+                end
+                if desc:IsA("BasePart") then
+                    desc.Material = Enum.Material.SmoothPlastic
+                    desc.CastShadow = false
+                end
+            end)
+        end
+    end)
+
+    -- Terrain simplificat
+    pcall(function()
+        workspace.Terrain.WaterWaveSize = 0
+        workspace.Terrain.WaterWaveSpeed = 0
+        workspace.Terrain.WaterReflectance = 0
+        workspace.Terrain.WaterTransparency = 0
+    end)
+
+    -- Alti playeri invizibili
+    pcall(function()
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= player and p.Character then
+                for _, part in ipairs(p.Character:GetDescendants()) do
+                    pcall(function()
+                        if part:IsA("BasePart") or part:IsA("Decal") then
+                            part.Transparency = 1
+                        end
+                    end)
+                end
+            end
+        end
+    end)
+
+    pcall(function() collectgarbage("collect") end)
+    print("[FPS BOOST] ON")
+end
+
+local function removeFpsBoost()
+    fpsBoostApplied = false
+    pcall(function()
+        Lighting.GlobalShadows = true
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic
+    end)
+    print("[FPS BOOST] OFF (rejoin pt restore complet)")
+end
+
+-- Auto-catch new particles
+workspace.DescendantAdded:Connect(function(desc)
+    if STATE.FpsBoost then
+        task.defer(function()
+            pcall(function()
+                if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or
+                   desc:IsA("Beam") or desc:IsA("Smoke") or
+                   desc:IsA("Fire") or desc:IsA("Sparkles") then
+                    desc.Enabled = false
+                end
+                if desc:IsA("BasePart") then
+                    desc.CastShadow = false
+                end
+            end)
+        end)
+    end
+end)
 
 -- =====================================================
 --  KILL OLD GUI
@@ -73,7 +235,6 @@ ScreenGui.Parent = playerGui
 local C = {
     bg          = Color3.fromRGB(15, 15, 22),
     topbar      = Color3.fromRGB(22, 22, 32),
-    section     = Color3.fromRGB(26, 26, 38),
     card        = Color3.fromRGB(30, 30, 44),
     toggleOff   = Color3.fromRGB(50, 50, 65),
     toggleOn    = Color3.fromRGB(88, 101, 242),
@@ -87,6 +248,7 @@ local C = {
     green       = Color3.fromRGB(55, 195, 115),
     orange      = Color3.fromRGB(240, 165, 50),
     cyan        = Color3.fromRGB(50, 200, 220),
+    yellow      = Color3.fromRGB(240, 200, 60),
 }
 
 -- =====================================================
@@ -94,21 +256,18 @@ local C = {
 -- =====================================================
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, 320, 0, 620)
-MainFrame.Position = UDim2.new(0, 16, 0.5, -310)
+MainFrame.Size = UDim2.new(0, 320, 0, 640)
+MainFrame.Position = UDim2.new(0, 16, 0.5, -320)
 MainFrame.BackgroundColor3 = C.bg
 MainFrame.BorderSizePixel = 0
 MainFrame.ClipsDescendants = true
 MainFrame.Parent = ScreenGui
 Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
+local mStroke = Instance.new("UIStroke", MainFrame)
+mStroke.Color = C.border
+mStroke.Thickness = 1
 
-local stroke = Instance.new("UIStroke", MainFrame)
-stroke.Color = C.border
-stroke.Thickness = 1
-
--- =====================================================
---  TOP BAR
--- =====================================================
+-- TOP BAR
 local TopBar = Instance.new("Frame")
 TopBar.Size = UDim2.new(1, 0, 0, 36)
 TopBar.BackgroundColor3 = C.topbar
@@ -134,22 +293,21 @@ local titleLbl = Instance.new("TextLabel")
 titleLbl.Size = UDim2.new(1, -80, 1, 0)
 titleLbl.Position = UDim2.new(0, 12, 0, 0)
 titleLbl.BackgroundTransparency = 1
-titleLbl.Text = "MEGA EXPLOIT v2"
+titleLbl.Text = "MEGA EXPLOIT v4"
 titleLbl.TextColor3 = C.text
 titleLbl.Font = Enum.Font.GothamBold
 titleLbl.TextSize = 14
 titleLbl.TextXAlignment = Enum.TextXAlignment.Left
 titleLbl.Parent = TopBar
 
-local statusDot = Instance.new("Frame")
-statusDot.Size = UDim2.new(0, 7, 0, 7)
-statusDot.Position = UDim2.new(0, 138, 0.5, -3)
-statusDot.BackgroundColor3 = C.green
-statusDot.BorderSizePixel = 0
-statusDot.Parent = TopBar
-Instance.new("UICorner", statusDot).CornerRadius = UDim.new(1, 0)
+local dot = Instance.new("Frame")
+dot.Size = UDim2.new(0, 7, 0, 7)
+dot.Position = UDim2.new(0, 140, 0.5, -3)
+dot.BackgroundColor3 = C.green
+dot.BorderSizePixel = 0
+dot.Parent = TopBar
+Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
 
--- Minimize
 local minBtn = Instance.new("TextButton")
 minBtn.Size = UDim2.new(0, 26, 0, 26)
 minBtn.Position = UDim2.new(1, -58, 0, 5)
@@ -162,7 +320,6 @@ minBtn.TextSize = 16
 minBtn.Parent = TopBar
 Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 6)
 
--- Close
 local closeBtn = Instance.new("TextButton")
 closeBtn.Size = UDim2.new(0, 26, 0, 26)
 closeBtn.Position = UDim2.new(1, -30, 0, 5)
@@ -176,11 +333,8 @@ closeBtn.TextSize = 12
 closeBtn.Parent = TopBar
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
 
--- =====================================================
---  CONTENT SCROLL
--- =====================================================
+-- SCROLL
 local Content = Instance.new("ScrollingFrame")
-Content.Name = "Content"
 Content.Size = UDim2.new(1, -12, 1, -48)
 Content.Position = UDim2.new(0, 6, 0, 42)
 Content.BackgroundTransparency = 1
@@ -191,18 +345,15 @@ Content.CanvasSize = UDim2.new(0, 0, 0, 0)
 Content.AutomaticCanvasSize = Enum.AutomaticSize.Y
 Content.Parent = MainFrame
 
-local layout = Instance.new("UIListLayout", Content)
-layout.SortOrder = Enum.SortOrder.LayoutOrder
-layout.Padding = UDim.new(0, 5)
+local listLayout = Instance.new("UIListLayout", Content)
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Padding = UDim.new(0, 5)
 
 -- =====================================================
---  GUI HELPERS
+--  GUI BUILDER HELPERS
 -- =====================================================
-local order = 0
-local function nextOrder()
-    order = order + 1
-    return order
-end
+local ord = 0
+local function nxt() ord = ord + 1 return ord end
 
 local function makeSection(title)
     local lbl = Instance.new("TextLabel")
@@ -213,22 +364,26 @@ local function makeSection(title)
     lbl.Font = Enum.Font.GothamBold
     lbl.TextSize = 10
     lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.LayoutOrder = nextOrder()
+    lbl.LayoutOrder = nxt()
     lbl.Parent = Content
 end
 
-local function makeToggle(label, stateKey, desc)
+local function makeToggle(label, stateKey, desc, warnText)
+    local rowH = 34
+    if desc then rowH = 44 end
+    if warnText then rowH = rowH + 14 end
+
     local row = Instance.new("Frame")
-    row.Size = UDim2.new(1, -4, 0, desc and 44 or 34)
+    row.Size = UDim2.new(1, -4, 0, rowH)
     row.BackgroundColor3 = C.card
     row.BorderSizePixel = 0
-    row.LayoutOrder = nextOrder()
+    row.LayoutOrder = nxt()
     row.Parent = Content
     Instance.new("UICorner", row).CornerRadius = UDim.new(0, 7)
 
     local lbl = Instance.new("TextLabel")
     lbl.Size = UDim2.new(1, -65, 0, 18)
-    lbl.Position = UDim2.new(0, 10, 0, desc and 4 or 8)
+    lbl.Position = UDim2.new(0, 10, 0, 4)
     lbl.BackgroundTransparency = 1
     lbl.Text = label
     lbl.TextColor3 = C.text
@@ -239,8 +394,8 @@ local function makeToggle(label, stateKey, desc)
 
     if desc then
         local d = Instance.new("TextLabel")
-        d.Size = UDim2.new(1, -65, 0, 14)
-        d.Position = UDim2.new(0, 10, 0, 24)
+        d.Size = UDim2.new(1, -65, 0, 13)
+        d.Position = UDim2.new(0, 10, 0, 22)
         d.BackgroundTransparency = 1
         d.Text = desc
         d.TextColor3 = C.textMuted
@@ -250,9 +405,22 @@ local function makeToggle(label, stateKey, desc)
         d.Parent = row
     end
 
+    if warnText then
+        local w = Instance.new("TextLabel")
+        w.Size = UDim2.new(1, -12, 0, 12)
+        w.Position = UDim2.new(0, 10, 1, -14)
+        w.BackgroundTransparency = 1
+        w.Text = warnText
+        w.TextColor3 = C.yellow
+        w.Font = Enum.Font.Gotham
+        w.TextSize = 8
+        w.TextXAlignment = Enum.TextXAlignment.Left
+        w.Parent = row
+    end
+
     local track = Instance.new("Frame")
     track.Size = UDim2.new(0, 40, 0, 20)
-    track.Position = UDim2.new(1, -50, 0.5, -10)
+    track.Position = UDim2.new(1, -50, 0, 7)
     track.BackgroundColor3 = STATE[stateKey] and C.toggleOn or C.toggleOff
     track.BorderSizePixel = 0
     track.Parent = row
@@ -289,49 +457,63 @@ local function makeInfoRow(label, initVal)
     row.Size = UDim2.new(1, -4, 0, 26)
     row.BackgroundColor3 = C.card
     row.BorderSizePixel = 0
-    row.LayoutOrder = nextOrder()
+    row.LayoutOrder = nxt()
     row.Parent = Content
     Instance.new("UICorner", row).CornerRadius = UDim.new(0, 5)
 
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(0.5, 0, 1, 0)
-    lbl.Position = UDim2.new(0, 10, 0, 0)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = label
-    lbl.TextColor3 = C.textMuted
-    lbl.Font = Enum.Font.Gotham
-    lbl.TextSize = 10
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.Parent = row
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(0.5, 0, 1, 0)
+    l.Position = UDim2.new(0, 10, 0, 0)
+    l.BackgroundTransparency = 1
+    l.Text = label
+    l.TextColor3 = C.textMuted
+    l.Font = Enum.Font.Gotham
+    l.TextSize = 10
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.Parent = row
 
-    local val = Instance.new("TextLabel")
-    val.Name = "Val"
-    val.Size = UDim2.new(0.5, -10, 1, 0)
-    val.Position = UDim2.new(0.5, 0, 0, 0)
-    val.BackgroundTransparency = 1
-    val.Text = initVal
-    val.TextColor3 = C.orange
-    val.Font = Enum.Font.GothamBold
-    val.TextSize = 11
-    val.TextXAlignment = Enum.TextXAlignment.Right
-    val.Parent = row
+    local v = Instance.new("TextLabel")
+    v.Name = "Val"
+    v.Size = UDim2.new(0.5, -10, 1, 0)
+    v.Position = UDim2.new(0.5, 0, 0, 0)
+    v.BackgroundTransparency = 1
+    v.Text = initVal
+    v.TextColor3 = C.orange
+    v.Font = Enum.Font.GothamBold
+    v.TextSize = 11
+    v.TextXAlignment = Enum.TextXAlignment.Right
+    v.Parent = row
+    return v
+end
 
-    return val
+local function makeButton(label, color, callback)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(1, -4, 0, 32)
+    b.BackgroundColor3 = color
+    b.BorderSizePixel = 0
+    b.Text = label
+    b.TextColor3 = C.textBright
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 12
+    b.LayoutOrder = nxt()
+    b.Parent = Content
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 7)
+    b.MouseButton1Click:Connect(callback)
+    return b
 end
 
 -- =====================================================
---  CLICK SPEED SELECTOR (preseturi + custom)
+--  CLICK SPEED PANEL
 -- =====================================================
 local function makeClickSpeedPanel()
     local panel = Instance.new("Frame")
     panel.Size = UDim2.new(1, -4, 0, 105)
     panel.BackgroundColor3 = C.card
     panel.BorderSizePixel = 0
-    panel.LayoutOrder = nextOrder()
+    panel.LayoutOrder = nxt()
     panel.Parent = Content
     Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 7)
 
-    -- Title
     local t = Instance.new("TextLabel")
     t.Size = UDim2.new(1, 0, 0, 20)
     t.Position = UDim2.new(0, 10, 0, 4)
@@ -343,145 +525,129 @@ local function makeClickSpeedPanel()
     t.TextXAlignment = Enum.TextXAlignment.Left
     t.Parent = panel
 
-    -- Preset buttons
     local presets = {10, 50, 100, 250, 500, 1000}
     local presetBtns = {}
-    local btnWidth = math.floor((320 - 12 - (#presets - 1) * 4) / #presets)
+    local bw = math.floor((308 - (#presets - 1) * 4) / #presets)
 
     for i, val in ipairs(presets) do
         local b = Instance.new("TextButton")
-        b.Size = UDim2.new(0, btnWidth, 0, 26)
-        b.Position = UDim2.new(0, 6 + (i - 1) * (btnWidth + 4), 0, 28)
+        b.Size = UDim2.new(0, bw, 0, 24)
+        b.Position = UDim2.new(0, 6 + (i-1) * (bw + 4), 0, 27)
         b.BackgroundColor3 = (STATE.ClicksPerFrame == val) and C.btnActive or C.btnInactive
         b.BorderSizePixel = 0
         b.Text = tostring(val)
         b.TextColor3 = (STATE.ClicksPerFrame == val) and C.textBright or C.textMuted
         b.Font = Enum.Font.GothamBold
-        b.TextSize = 12
+        b.TextSize = 11
         b.Parent = panel
         Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
         presetBtns[i] = b
     end
 
-    -- Custom input row
-    local customLbl = Instance.new("TextLabel")
-    customLbl.Size = UDim2.new(0, 60, 0, 20)
-    customLbl.Position = UDim2.new(0, 10, 0, 60)
-    customLbl.BackgroundTransparency = 1
-    customLbl.Text = "Custom:"
-    customLbl.TextColor3 = C.textMuted
-    customLbl.Font = Enum.Font.GothamSemibold
-    customLbl.TextSize = 11
-    customLbl.TextXAlignment = Enum.TextXAlignment.Left
-    customLbl.Parent = panel
-
     local customBox = Instance.new("TextBox")
-    customBox.Size = UDim2.new(0, 80, 0, 26)
-    customBox.Position = UDim2.new(0, 72, 0, 58)
-    customBox.BackgroundColor3 = C.section
+    customBox.Size = UDim2.new(0, 80, 0, 24)
+    customBox.Position = UDim2.new(0, 72, 0, 57)
+    customBox.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
     customBox.BorderSizePixel = 0
     customBox.Text = tostring(STATE.ClicksPerFrame)
     customBox.TextColor3 = C.cyan
     customBox.PlaceholderText = "nr..."
-    customBox.PlaceholderColor3 = C.toggleOff
     customBox.Font = Enum.Font.GothamBold
     customBox.TextSize = 13
     customBox.ClearTextOnFocus = false
     customBox.Parent = panel
     Instance.new("UICorner", customBox).CornerRadius = UDim.new(0, 5)
-    local boxStroke = Instance.new("UIStroke", customBox)
-    boxStroke.Color = C.border
-    boxStroke.Thickness = 1
+    Instance.new("UIStroke", customBox).Color = C.border
+
+    local customLbl = Instance.new("TextLabel")
+    customLbl.Size = UDim2.new(0, 60, 0, 24)
+    customLbl.Position = UDim2.new(0, 10, 0, 57)
+    customLbl.BackgroundTransparency = 1
+    customLbl.Text = "Custom:"
+    customLbl.TextColor3 = C.textMuted
+    customLbl.Font = Enum.Font.GothamSemibold
+    customLbl.TextSize = 10
+    customLbl.TextXAlignment = Enum.TextXAlignment.Left
+    customLbl.Parent = panel
 
     local applyBtn = Instance.new("TextButton")
-    applyBtn.Size = UDim2.new(0, 60, 0, 26)
-    applyBtn.Position = UDim2.new(0, 158, 0, 58)
+    applyBtn.Size = UDim2.new(0, 55, 0, 24)
+    applyBtn.Position = UDim2.new(0, 158, 0, 57)
     applyBtn.BackgroundColor3 = C.toggleOn
     applyBtn.BorderSizePixel = 0
     applyBtn.Text = "APPLY"
     applyBtn.TextColor3 = C.textBright
     applyBtn.Font = Enum.Font.GothamBold
-    applyBtn.TextSize = 11
+    applyBtn.TextSize = 10
     applyBtn.Parent = panel
     Instance.new("UICorner", applyBtn).CornerRadius = UDim.new(0, 5)
 
-    -- Current display
-    local currentLbl = Instance.new("TextLabel")
-    currentLbl.Name = "CurrentSpeed"
-    currentLbl.Size = UDim2.new(0, 80, 0, 20)
-    currentLbl.Position = UDim2.new(1, -88, 0, 62)
-    currentLbl.BackgroundTransparency = 1
-    currentLbl.Text = STATE.ClicksPerFrame .. "/frame"
-    currentLbl.TextColor3 = C.green
-    currentLbl.Font = Enum.Font.GothamBold
-    currentLbl.TextSize = 12
-    currentLbl.TextXAlignment = Enum.TextXAlignment.Right
-    currentLbl.Parent = panel
+    local curLbl = Instance.new("TextLabel")
+    curLbl.Size = UDim2.new(0, 85, 0, 24)
+    curLbl.Position = UDim2.new(1, -90, 0, 57)
+    curLbl.BackgroundTransparency = 1
+    curLbl.Text = STATE.ClicksPerFrame .. "/frame"
+    curLbl.TextColor3 = C.green
+    curLbl.Font = Enum.Font.GothamBold
+    curLbl.TextSize = 12
+    curLbl.TextXAlignment = Enum.TextXAlignment.Right
+    curLbl.Parent = panel
 
-    -- Warn label
-    local warnLbl = Instance.new("TextLabel")
-    warnLbl.Size = UDim2.new(1, -12, 0, 14)
-    warnLbl.Position = UDim2.new(0, 6, 1, -16)
-    warnLbl.BackgroundTransparency = 1
-    warnLbl.Text = "> 500 poate lag-ui! 1000+ = risc de crash"
-    warnLbl.TextColor3 = C.red
-    warnLbl.Font = Enum.Font.Gotham
-    warnLbl.TextSize = 9
-    warnLbl.TextXAlignment = Enum.TextXAlignment.Left
-    warnLbl.Parent = panel
+    local warnL = Instance.new("TextLabel")
+    warnL.Size = UDim2.new(1, -12, 0, 14)
+    warnL.Position = UDim2.new(0, 6, 1, -16)
+    warnL.BackgroundTransparency = 1
+    warnL.Text = "> 500 poate lag-ui. Activeaza FPS Boost!"
+    warnL.TextColor3 = C.red
+    warnL.Font = Enum.Font.Gotham
+    warnL.TextSize = 9
+    warnL.TextXAlignment = Enum.TextXAlignment.Left
+    warnL.Parent = panel
 
     local function setSpeed(val)
         val = math.clamp(val, 1, 10000)
         STATE.ClicksPerFrame = val
         customBox.Text = tostring(val)
-        currentLbl.Text = val .. "/frame"
+        curLbl.Text = val .. "/frame"
         for i, b in ipairs(presetBtns) do
-            local isActive = (presets[i] == val)
+            local act = (presets[i] == val)
             TweenService:Create(b, TweenInfo.new(0.1), {
-                BackgroundColor3 = isActive and C.btnActive or C.btnInactive
+                BackgroundColor3 = act and C.btnActive or C.btnInactive
             }):Play()
-            b.TextColor3 = isActive and C.textBright or C.textMuted
+            b.TextColor3 = act and C.textBright or C.textMuted
         end
     end
 
     for i, b in ipairs(presetBtns) do
-        b.MouseButton1Click:Connect(function()
-            setSpeed(presets[i])
-        end)
+        b.MouseButton1Click:Connect(function() setSpeed(presets[i]) end)
     end
-
     applyBtn.MouseButton1Click:Connect(function()
         local n = tonumber(customBox.Text)
-        if n then
-            setSpeed(math.floor(n))
-        end
+        if n then setSpeed(math.floor(n)) end
     end)
-
-    customBox.FocusLost:Connect(function(enterPressed)
-        if enterPressed then
+    customBox.FocusLost:Connect(function(enter)
+        if enter then
             local n = tonumber(customBox.Text)
             if n then setSpeed(math.floor(n)) end
         end
     end)
 end
 
--- =====================================================
---  CLICK METHODS PANEL
--- =====================================================
+-- CLICK METHODS PANEL
 local function makeClickMethodsPanel()
     local panel = Instance.new("Frame")
-    panel.Size = UDim2.new(1, -4, 0, 52)
+    panel.Size = UDim2.new(1, -4, 0, 50)
     panel.BackgroundColor3 = C.card
     panel.BorderSizePixel = 0
-    panel.LayoutOrder = nextOrder()
+    panel.LayoutOrder = nxt()
     panel.Parent = Content
     Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 7)
 
     local t = Instance.new("TextLabel")
-    t.Size = UDim2.new(1, 0, 0, 18)
+    t.Size = UDim2.new(1, 0, 0, 16)
     t.Position = UDim2.new(0, 10, 0, 3)
     t.BackgroundTransparency = 1
-    t.Text = "METODE CLICK (activeaza mai multe = mai rapid)"
+    t.Text = "METODE (mai multe = mai rapid)"
     t.TextColor3 = C.textMuted
     t.Font = Enum.Font.GothamBold
     t.TextSize = 9
@@ -491,25 +657,25 @@ local function makeClickMethodsPanel()
     local methods = {
         {key = "ClickMethod_HB", label = "Heartbeat"},
         {key = "ClickMethod_RS", label = "Render"},
-        {key = "ClickMethod_WH", label = "While-Loop"},
+        {key = "ClickMethod_WH", label = "While x3"},
     }
 
     for i, m in ipairs(methods) do
         local b = Instance.new("TextButton")
-        b.Size = UDim2.new(0, 90, 0, 24)
-        b.Position = UDim2.new(0, 6 + (i-1) * 96, 0, 24)
+        b.Size = UDim2.new(0, 90, 0, 22)
+        b.Position = UDim2.new(0, 6 + (i-1) * 96, 0, 22)
         b.BackgroundColor3 = STATE[m.key] and C.green or C.btnInactive
         b.BorderSizePixel = 0
         b.Text = m.label
         b.TextColor3 = STATE[m.key] and C.textBright or C.textMuted
         b.Font = Enum.Font.GothamBold
-        b.TextSize = 11
+        b.TextSize = 10
         b.Parent = panel
         Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
 
         b.MouseButton1Click:Connect(function()
             STATE[m.key] = not STATE[m.key]
-            TweenService:Create(b, TweenInfo.new(0.12), {
+            TweenService:Create(b, TweenInfo.new(0.1), {
                 BackgroundColor3 = STATE[m.key] and C.green or C.btnInactive
             }):Play()
             b.TextColor3 = STATE[m.key] and C.textBright or C.textMuted
@@ -521,60 +687,61 @@ end
 --  BUILD GUI
 -- =====================================================
 
--- Stats
-makeSection("STATS LIVE")
-local clicksDisp = makeInfoRow("Clicks", tostring(clickerStats.Clicks.Value))
-local multiDisp = makeInfoRow("Total Multi", string.format("%.1fx", clickerStats.TotalMultiplier.Value))
-local towerDisp = makeInfoRow("Tower Multi", string.format("%.1fx", clickerStats.TowerMultiplier.Value))
-local rebirthDisp = makeInfoRow("Rebirths", tostring(clickerStats.RebirthCount.Value))
+makeSection("STATS LIVE (SERVER-SIDE, REALE)")
+local clicksD = makeInfoRow("Clicks", tostring(clickerStats.Clicks.Value))
+local multiD = makeInfoRow("Total Multi", string.format("%.1fx", clickerStats.TotalMultiplier.Value))
+local towerD = makeInfoRow("Tower Multi", string.format("%.1fx", clickerStats.TowerMultiplier.Value))
+local rebirthD = makeInfoRow("Rebirths", tostring(clickerStats.RebirthCount.Value))
+local rewardD = makeInfoRow("Reward/Tap", tostring(clickerStats.RewardPerTap.Value))
 
--- Click section
 makeSection("AUTO CLICK")
 makeToggle("Auto Click ON/OFF", "AutoClick", "Master switch pt click spam")
 makeClickSpeedPanel()
 makeClickMethodsPanel()
 
--- Other exploits
-makeSection("VALUE EXPLOITS")
-makeToggle("AddValue Spam", "AddValueSpam", "Spam AddValue remote cu 999M")
-makeToggle("Stat Override", "StatOverride", "Forteaza multipliers la MAX local")
+makeSection("SERVER-SIDE EXPLOITS (REALE)")
+makeToggle("AddValue Spam", "AddValueSpam",
+    "Spam AddValue remote - merge DOAR daca nu e securizat",
+    "Daca serverul valideaza, nu va functiona")
+makeToggle("Auto Upgrade", "AutoUpgrade",
+    "Cumpara ClickPower + ClickMulti server-side")
+makeToggle("Auto Rebirth", "AutoRebirth",
+    "RequestSkipRebirth - server decides")
+makeToggle("Auto Speed", "AutoSpeed", "UpgradeSpeed remote")
+makeToggle("Auto Skill Tree", "AutoSkillTree", "Cumpara nodurile skill tree")
 
-makeSection("AUTO PROGRESSION")
-makeToggle("Auto Rebirth", "AutoRebirth", "Rebirth instant cand posibil")
-makeToggle("Auto Upgrade", "AutoUpgrade", "ClickPower + ClickMulti auto")
-makeToggle("Auto Speed", "AutoSpeed", "Upgrade speed non-stop")
-makeToggle("Auto Skill Tree", "AutoSkillTree", "Cumpara toate nodurile")
+makeSection("CLIENT-SIDE (DOAR VIZUAL)")
+makeToggle("Stat Override", "StatOverride",
+    "Forteaza numere mari LOCAL - serverul NU le vede",
+    "ATENTIE: doar vizual, nu afecteaza jocul real!")
 
 makeSection("PETS & ITEMS")
 makeToggle("Auto Hatch", "AutoHatch", "Hatch toate ouale")
-makeToggle("Lucky Block Spam", "LuckyBlock", "Deschide lucky blocks")
+makeToggle("Lucky Block", "LuckyBlock", "Deschide lucky blocks")
+
+makeSection("TOWER")
+makeToggle("Auto Tower Loop", "AutoTower",
+    "TP la varful tower-ului + fire Finish la 5s")
+
+makeButton("TP LA VARFUL TOWER-ULUI", C.toggleOn, function()
+    local ok = tpToTowerTop()
+    print(ok and "[TOWER] Teleportat la varf!" or "[TOWER] Nu s-a gasit characterul")
+end)
+
+makeButton("TP LA BAZA TOWER-ULUI", C.btnInactive, function()
+    tpToTowerBase()
+    print("[TOWER] Teleportat la baza")
+end)
+
+makeButton("FIRE FINISH EVENT", C.orange, function()
+    pcall(function() FinishRemote:FireServer() end)
+    print("[TOWER] Finish event fired!")
+end)
 
 makeSection("PERFORMANCE")
-makeToggle("FPS Boost", "FpsBoost", "Sterge particule, shadows, efecte")
-
-makeSection("TOWER & MISC")
-makeToggle("Auto Tower TP", "AutoTower", "Teleport la TowerEnd la 5s")
-makeToggle("Anti-AFK", "AntiAFK", "Previne kick-ul AFK")
-
--- TP Button
-local tpBtn = Instance.new("TextButton")
-tpBtn.Size = UDim2.new(1, -4, 0, 34)
-tpBtn.BackgroundColor3 = C.toggleOn
-tpBtn.BorderSizePixel = 0
-tpBtn.Text = "TELEPORT LA TOWER ACUM"
-tpBtn.TextColor3 = C.textBright
-tpBtn.Font = Enum.Font.GothamBold
-tpBtn.TextSize = 12
-tpBtn.LayoutOrder = nextOrder()
-tpBtn.Parent = Content
-Instance.new("UICorner", tpBtn).CornerRadius = UDim.new(0, 7)
-
--- Spacer
-local spacer = Instance.new("Frame")
-spacer.Size = UDim2.new(1, 0, 0, 10)
-spacer.BackgroundTransparency = 1
-spacer.LayoutOrder = nextOrder()
-spacer.Parent = Content
+makeToggle("FPS Boost", "FpsBoost",
+    "Sterge particule, shadows, efecte, alti playeri")
+makeToggle("Anti-AFK", "AntiAFK", "Previne kick-ul")
 
 -- =====================================================
 --  DRAGGING
@@ -608,9 +775,7 @@ UIS.InputEnded:Connect(function(input)
     end
 end)
 
--- =====================================================
---  MINIMIZE / CLOSE
--- =====================================================
+-- MINIMIZE / CLOSE
 local minimized = false
 local fullSize = MainFrame.Size
 
@@ -633,163 +798,21 @@ end)
 task.spawn(function()
     while ScreenGui.Parent do
         pcall(function()
-            clicksDisp.Text = tostring(clickerStats.Clicks.Value)
-            multiDisp.Text = string.format("%.1fx", clickerStats.TotalMultiplier.Value)
-            towerDisp.Text = string.format("%.1fx", clickerStats.TowerMultiplier.Value)
-            rebirthDisp.Text = tostring(clickerStats.RebirthCount.Value)
+            clicksD.Text = tostring(clickerStats.Clicks.Value)
+            multiD.Text = string.format("%.1fx", clickerStats.TotalMultiplier.Value)
+            towerD.Text = string.format("%.1fx", clickerStats.TowerMultiplier.Value)
+            rebirthD.Text = tostring(clickerStats.RebirthCount.Value)
+            rewardD.Text = tostring(clickerStats.RewardPerTap.Value)
         end)
         task.wait(0.4)
     end
 end)
 
 -- =====================================================
-
--- =====================================================
---  FPS BOOST ENGINE
---  Sterge particule, texturi, shadows, effects etc.
---  Reduce MASIV load-ul GPU/CPU pt a suporta click spam
--- =====================================================
-
-local Lighting = game:GetService("Lighting")
-local StarterGui = game:GetService("StarterGui")
-
-local fpsBoostApplied = false
-
-local function applyFpsBoost()
-    if fpsBoostApplied then return end
-    fpsBoostApplied = true
-
-    -- 1. Lighting simplu
-    pcall(function()
-        Lighting.GlobalShadows = false
-        Lighting.FogEnd = 9e9
-        Lighting.Brightness = 1
-        Lighting.Technology = Enum.Technology.Compatibility  -- cel mai usor
-        -- Sterge post-processing effects
-        for _, child in ipairs(Lighting:GetChildren()) do
-            if child:IsA("BlurEffect") or child:IsA("SunRaysEffect") or
-               child:IsA("BloomEffect") or child:IsA("ColorCorrectionEffect") or
-               child:IsA("DepthOfFieldEffect") or child:IsA("Atmosphere") then
-                child:Destroy()
-            end
-        end
-    end)
-
-    -- 2. Sterge TOATE particulele din workspace
-    pcall(function()
-        for _, desc in ipairs(workspace:GetDescendants()) do
-            pcall(function()
-                if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or
-                   desc:IsA("Beam") or desc:IsA("Smoke") or
-                   desc:IsA("Fire") or desc:IsA("Sparkles") or
-                   desc:IsA("PointLight") or desc:IsA("SpotLight") or
-                   desc:IsA("SurfaceLight") then
-                    desc.Enabled = false
-                    -- sau desc:Destroy() daca vrei mai agresiv
-                end
-            end)
-        end
-    end)
-
-    -- 3. Reduce calitatea texturilor si meshurilor
-    pcall(function()
-        settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
-    end)
-    pcall(function()
-        sethiddenproperty(Lighting, "Technology", Enum.Technology.Compatibility)
-    end)
-
-    -- 4. Sterge decoratiuni din Lobby/Map
-    pcall(function()
-        local lobby = workspace:FindFirstChild("Lobby")
-        if lobby then
-            for _, desc in ipairs(lobby:GetDescendants()) do
-                pcall(function()
-                    if desc:IsA("Decal") or desc:IsA("Texture") or
-                       desc:IsA("SurfaceAppearance") then
-                        desc:Destroy()
-                    end
-                end)
-            end
-        end
-    end)
-
-    -- 5. Reduce draw distance pt parti indepartate
-    pcall(function()
-        for _, desc in ipairs(workspace:GetDescendants()) do
-            pcall(function()
-                if desc:IsA("BasePart") then
-                    desc.Material = Enum.Material.SmoothPlastic
-                    desc.Reflectance = 0
-                    desc.CastShadow = false
-                end
-            end)
-        end
-    end)
-
-    -- 6. Terrain simplificat
-    pcall(function()
-        workspace.Terrain.WaterWaveSize = 0
-        workspace.Terrain.WaterWaveSpeed = 0
-        workspace.Terrain.WaterReflectance = 0
-        workspace.Terrain.WaterTransparency = 0
-    end)
-
-    -- 7. Disable player character rendering pt altii
-    pcall(function()
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= player and p.Character then
-                pcall(function()
-                    for _, part in ipairs(p.Character:GetDescendants()) do
-                        if part:IsA("BasePart") or part:IsA("Decal") then
-                            part.Transparency = 1
-                        end
-                        if part:IsA("ParticleEmitter") then
-                            part.Enabled = false
-                        end
-                    end
-                end)
-            end
-        end
-    end)
-
-    -- 8. Sterge efectele din PetModels vizibile
-    pcall(function()
-        local clientFollowers = workspace:FindFirstChild("ClientFollowers")
-        if clientFollowers then
-            for _, desc in ipairs(clientFollowers:GetDescendants()) do
-                pcall(function()
-                    if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or
-                       desc:IsA("PointLight") or desc:IsA("Highlight") then
-                        desc.Enabled = false
-                    end
-                end)
-            end
-        end
-    end)
-
-    -- 9. Garbage collect
-    pcall(function()
-        collectgarbage("collect")
-    end)
-
-    print("[FPS BOOST] Toate optimizarile aplicate!")
-end
-
-local function removeFpsBoost()
-    -- Nu putem restaura tot, dar marcam ca dezactivat
-    fpsBoostApplied = false
-    pcall(function()
-        Lighting.GlobalShadows = true
-        settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic
-    end)
-    print("[FPS BOOST] Dezactivat (unele schimbari raman pana la rejoin)")
-end
-
 --  EXPLOIT ENGINES
 -- =====================================================
 
--- METHOD 1: Heartbeat (60Hz)
+-- HEARTBEAT CLICK
 RunService.Heartbeat:Connect(function()
     if STATE.AutoClick and STATE.ClickMethod_HB then
         for i = 1, STATE.ClicksPerFrame do
@@ -798,7 +821,7 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- METHOD 2: RenderStepped (60Hz, fires before frame render)
+-- RENDERSTEP CLICK
 RunService.RenderStepped:Connect(function()
     if STATE.AutoClick and STATE.ClickMethod_RS then
         for i = 1, STATE.ClicksPerFrame do
@@ -807,33 +830,8 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
--- METHOD 3: While-loop (fastest possible, adaptive yield)
--- Mai inteligent: yield mai des cand clicks/frame e mare
-task.spawn(function()
-    local counter = 0
-    while ScreenGui.Parent do
-        if STATE.AutoClick and STATE.ClickMethod_WH then
-            for i = 1, STATE.ClicksPerFrame do
-                pcall(function() ClickAction:FireServer() end)
-            end
-            counter = counter + 1
-            -- Adaptive yield: cu cat mai multe clicks, yield mai des
-            local yieldEvery = math.max(5, math.floor(500 / math.max(STATE.ClicksPerFrame, 1)))
-            if counter % yieldEvery == 0 then
-                task.wait()
-                -- Garbage collect periodic la load mare
-                if counter % (yieldEvery * 20) == 0 then
-                    pcall(function() collectgarbage("collect") end)
-                end
-            end
-        else
-            task.wait(0.1)
-        end
-    end
-end)
-
--- METHOD 4: Spawn MULTIPLE while-loops (x3 throughput)
-for threadNum = 1, 2 do
+-- WHILE-LOOP CLICK (3 threads, adaptive yield)
+for threadIdx = 1, 3 do
     task.spawn(function()
         local c = 0
         while ScreenGui.Parent do
@@ -842,9 +840,12 @@ for threadNum = 1, 2 do
                     pcall(function() ClickAction:FireServer() end)
                 end
                 c = c + 1
-                local yieldEvery = math.max(5, math.floor(500 / math.max(STATE.ClicksPerFrame, 1)))
+                local yieldEvery = math.max(3, math.floor(300 / math.max(STATE.ClicksPerFrame, 1)))
                 if c % yieldEvery == 0 then
                     task.wait()
+                    if c % (yieldEvery * 25) == 0 then
+                        pcall(function() collectgarbage("collect") end)
+                    end
                 end
             else
                 task.wait(0.1)
@@ -860,13 +861,14 @@ task.spawn(function()
             pcall(function()
                 AddValue:FireServer("Clicks", 999999999)
                 AddValue:FireServer(999999999)
+                AddValue:FireServer(player, 999999999)
             end)
         end
         task.wait()
     end
 end)
 
--- STAT OVERRIDE
+-- STAT OVERRIDE (vizual)
 task.spawn(function()
     while ScreenGui.Parent do
         if STATE.StatOverride then
@@ -970,22 +972,28 @@ task.spawn(function()
     end
 end)
 
--- AUTO TOWER
-local function tpTower()
-    pcall(function()
-        local te = workspace:FindFirstChild("TowerEnd")
-        if te and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-            player.Character.HumanoidRootPart.CFrame = CFrame.new(te.Position + Vector3.new(0, 5, 0))
-        end
-    end)
-end
-
-tpBtn.MouseButton1Click:Connect(tpTower)
-
+-- AUTO TOWER (TP + fire Finish)
 task.spawn(function()
     while ScreenGui.Parent do
-        if STATE.AutoTower then tpTower() end
+        if STATE.AutoTower then
+            tpToTowerTop()
+            task.wait(1)
+            -- Fire finish dupa ce ajungi
+            pcall(function() FinishRemote:FireServer() end)
+        end
         task.wait(5)
+    end
+end)
+
+-- FPS BOOST WATCHER
+task.spawn(function()
+    while ScreenGui.Parent do
+        if STATE.FpsBoost and not fpsBoostApplied then
+            applyFpsBoost()
+        elseif not STATE.FpsBoost and fpsBoostApplied then
+            removeFpsBoost()
+        end
+        task.wait(2)
     end
 end)
 
@@ -998,44 +1006,8 @@ player.Idled:Connect(function()
     end
 end)
 
-
--- FPS BOOST WATCHER
-task.spawn(function()
-    while ScreenGui.Parent do
-        if STATE.FpsBoost and not fpsBoostApplied then
-            applyFpsBoost()
-        elseif not STATE.FpsBoost and fpsBoostApplied then
-            removeFpsBoost()
-        end
-        -- Re-apply on new instances
-        if STATE.FpsBoost then
-            pcall(function()
-                workspace.DescendantAdded:Wait()
-                -- noop, just catches new items
-            end)
-        end
-        task.wait(2)
-    end
-end)
-
--- Also catch new descendants to disable particles
-task.spawn(function()
-    workspace.DescendantAdded:Connect(function(desc)
-        if STATE.FpsBoost then
-            task.defer(function()
-                pcall(function()
-                    if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or
-                       desc:IsA("Beam") or desc:IsA("Smoke") or
-                       desc:IsA("Fire") or desc:IsA("Sparkles") then
-                        desc.Enabled = false
-                    end
-                    if desc:IsA("BasePart") then
-                        desc.CastShadow = false
-                    end
-                end)
-            end)
-        end
-    end)
-end)
-
-print("[MEGA EXPLOIT v2] GUI loaded! Toate feature-urile gata.")
+print("============================================")
+print("  MEGA EXPLOIT v4 LOADED")
+print("  Tower Origin: " .. tostring(ObbyConfig.Origin))
+print("  Tower Top: ~Y=" .. tostring((ObbyConfig.Origin and ObbyConfig.Origin.Y or 0) + 6*30))
+print("============================================")
