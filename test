@@ -1,162 +1,215 @@
-local CoreGui = game:GetService("CoreGui");
-local LogService = game:GetService("LogService");
-local screenGui = Instance.new("ScreenGui");
-screenGui.Name = "DeltaDebugUI";
-screenGui.Parent = CoreGui;
+- ============================================================
+-- [DELTA SYSTEM] Script fixat pentru salvarea hărții + teren
+-- ============================================================
 
-local frame = Instance.new("Frame");
-frame.Size = UDim2.new(0.5, 0, 0.5, 0);
-frame.Position = UDim2.new(0.05, 0, 0.2, 0);
-frame.BackgroundColor3 = Color3.new(0, 0, 0);
-frame.BackgroundTransparency = 0.2;
-frame.Parent = screenGui;
-
-local scrollFrame = Instance.new("ScrollingFrame");
-scrollFrame.Size = UDim2.new(1, -10, 1, -10);
-scrollFrame.Position = UDim2.new(0, 5, 0, 5);
-scrollFrame.BackgroundTransparency = 1;
-scrollFrame.CanvasSize = UDim2.new(0, 0, 10, 0);
-scrollFrame.Parent = frame;
-
-local listLayout = Instance.new("UIListLayout");
-listLayout.Parent = scrollFrame;
-
-local function afiseazaPeEcran(msg, isError)
-    print(msg);
-    local textLabel = Instance.new("TextLabel");
-    textLabel.Size = UDim2.new(1, 0, 0, 20);
-    textLabel.BackgroundTransparency = 1;
-    textLabel.TextXAlignment = Enum.TextXAlignment.Left;
-    textLabel.Text = os.date("[%X] ") .. msg;
-    if isError then textLabel.TextColor3 = Color3.new(1, 0.3, 0.3) else textLabel.TextColor3 = Color3.new(1, 1, 1) end;
-    textLabel.TextSize = 14;
-    textLabel.Parent = scrollFrame;
-    scrollFrame.CanvasPosition = Vector2.new(0, scrollFrame.AbsoluteWindowSize.Y * 10);
-end
-
-local function adaugaLog(msg)
-    afiseazaPeEcran("[Delta Custom] " .. msg, false);
-end
+local logData = "=== [DELTA SYSTEM] JURNAL DE DEBUG ===\n"
+local LogService = game:GetService("LogService")
 
 local logConnection = LogService.MessageOut:Connect(function(message, messageType)
-    if messageType == Enum.MessageType.MessageError then
-        afiseazaPeEcran("[EROARE ROBLOX] " .. message, true);
-    elseif string.find(string.lower(message), "terrain") then
-        afiseazaPeEcran("[INFO TEREN] " .. message, false);
+    logData = logData .. os.date("[%X] ") .. "[" .. tostring(messageType) .. "] " .. message .. "\n"
+end)
+
+local function adaugaLog(msg)
+    print(msg)
+    logData = logData .. os.date("[%X] ") .. "[Delta Custom] " .. msg .. "\n"
+end
+
+adaugaLog("Se inițializează scriptul...")
+
+-- ============================================================
+-- 1. Încărcăm librăria SynSaveInstance
+-- ============================================================
+local Params = {
+    URLs = {
+        "https://raw.githubusercontent.com/luau/SynSaveInstance/main/saveinstance.luau",
+        "https://raw.githubusercontent.com/luau/UniversalSynSaveInstance/main/saveinstance.luau",
+    }
+}
+
+local synsaveinstance = nil
+
+for _, url in ipairs(Params.URLs) do
+    local ok, result = pcall(function()
+        return loadstring(game:HttpGet(url, true), "SSI")()
+    end)
+    if ok and result then
+        synsaveinstance = result
+        adaugaLog("Librăria SSI încărcată cu succes de la: " .. url)
+        break
+    else
+        adaugaLog("Nu s-a putut încărca de la: " .. url .. " | Eroare: " .. tostring(result))
     end
-end);
-
-adaugaLog("Se initializeaza scriptul si se descarca libraria...");
-
-local Params = {RepoURL = "https://raw.githubusercontent.com/luau/SynSaveInstance/main/", SSI = "saveinstance"};
-
-local succesLib, synsaveinstance = pcall(function()
-    return loadstring(game:HttpGet(Params.RepoURL .. Params.SSI .. ".luau", true), Params.SSI)();
-end);
-
-if not succesLib then
-    adaugaLog("EROARE CRITICA: Nu s-a putut incarca libraria SynSaveInstance!");
 end
 
-local Workspace = game:GetService("Workspace");
-local Lighting = game:GetService("Lighting");
-local Players = game:GetService("Players");
+if not synsaveinstance then
+    adaugaLog("EROARE CRITICĂ: Nu s-a putut încărca librăria SynSaveInstance din nicio sursă!")
+    logConnection:Disconnect()
+    pcall(function() writefile("Delta_Log_Erori.txt", logData) end)
+    return
+end
 
-local CacheFolder = Lighting:FindFirstChild("Delta_Map_Cache_Protected");
+-- ============================================================
+-- 2. Verificăm suportul pentru teren
+-- ============================================================
+local Workspace = game:GetService("Workspace")
+local Lighting = game:GetService("Lighting")
+local Players = game:GetService("Players")
+
+local teren = Workspace:FindFirstChildOfClass("Terrain")
+local terenSuportat = false
+
+if teren then
+    teren.Archivable = true
+    adaugaLog("Terrain găsit în Workspace.")
+
+    local okRead, errRead = pcall(function()
+        local region = Region3.new(Vector3.new(0, 0, 0), Vector3.new(4, 4, 4))
+        region = region:ExpandToGrid(4)
+        teren:ReadVoxels(region, 4)
+    end)
+
+    if okRead then
+        terenSuportat = true
+        adaugaLog("ReadVoxels FUNCȚIONEAZĂ — terenul VA fi salvat.")
+    else
+        adaugaLog("ReadVoxels NU funcționează pe acest executor: " .. tostring(errRead))
+        adaugaLog("Terenul NU va fi salvat. Executorul tău nu suportă această funcție.")
+    end
+else
+    adaugaLog("AVERTISMENT: Terrain nu a fost găsit în Workspace.")
+end
+
+-- ============================================================
+-- 3. Cache obiecte din Workspace (streaming)
+-- ============================================================
+local CacheFolder = Lighting:FindFirstChild("Delta_Map_Cache_Protected")
 if not CacheFolder then
-    CacheFolder = Instance.new("Folder");
-    CacheFolder.Name = "Delta_Map_Cache_Protected";
-    CacheFolder.Parent = Lighting;
+    CacheFolder = Instance.new("Folder")
+    CacheFolder.Name = "Delta_Map_Cache_Protected"
+    CacheFolder.Parent = Lighting
 end
 
-local processedUIDs = {};
-local totalObjectsCached = 0;
+local processedUIDs = {}
+local totalObjectsCached = 0
 
 local function cacheInstance(inst)
-    if not inst:IsA("BasePart") and not inst:IsA("Model") then return end;
-    if inst:IsA("Terrain") then return end;
-    if inst:IsDescendantOf(Players) then return end;
-    if inst:IsDescendantOf(CacheFolder) then return end;
+    if inst:IsA("Terrain") then return end
+    if not inst:IsA("BasePart") and not inst:IsA("Model") then return end
+    if inst:IsDescendantOf(Players) then return end
+    if inst:IsDescendantOf(CacheFolder) then return end
 
-    local uid = inst:GetDebugId();
+    local uid = inst:GetDebugId()
+    if processedUIDs[uid] then return end
+    processedUIDs[uid] = true
 
-    if not processedUIDs[uid] then
-        processedUIDs[uid] = true;
-        task.spawn(function()
-            pcall(function()
-                local clona = inst:Clone();
-                if clona then
-                    clona.Archivable = true;
-                    if clona:IsA("BasePart") then
-                        clona.Anchored = true;
-                    else
-                        for _, desc in ipairs(clona:GetDescendants()) do
-                            if desc:IsA("BasePart") then
-                                desc.Anchored = true;
-                                desc.Archivable = true;
-                            end
-                        end
+    task.spawn(function()
+        local ok, clona = pcall(function() return inst:Clone() end)
+        if ok and clona then
+            clona.Archivable = true
+            if clona:IsA("BasePart") then
+                clona.Anchored = true
+            else
+                for _, desc in ipairs(clona:GetDescendants()) do
+                    if desc:IsA("BasePart") then
+                        desc.Anchored = true
+                        desc.Archivable = true
                     end
-                    clona.Parent = CacheFolder;
-                    totalObjectsCached = totalObjectsCached + 1;
                 end
-            end);
-        end);
-    end
+            end
+            clona.Parent = CacheFolder
+            totalObjectsCached = totalObjectsCached + 1
+        end
+    end)
 end
 
-adaugaLog("SCANARE HARTA + TEREN PORNITA");
+adaugaLog("SCANARE HARTĂ PORNITĂ...")
 
 for _, v in ipairs(Workspace:GetDescendants()) do
-    cacheInstance(v);
+    cacheInstance(v)
 end
 
-local streamListener = Workspace.DescendantAdded:Connect(cacheInstance);
+local streamListener = Workspace.DescendantAdded:Connect(cacheInstance)
 
+adaugaLog("Scanare inițială completă. Obiecte cached: " .. tostring(totalObjectsCached))
+
+-- ============================================================
+-- 4. Funcția de salvare finală
+-- ============================================================
 _G.SalveazaHartaFinala = function()
-    adaugaLog("INITIALIZARE SALVARE JOC COMPLET... Se pregateste terenul.");
-    if streamListener then streamListener:Disconnect() end;
+    adaugaLog("=== INIȚIALIZARE SALVARE ===")
 
-    local teren = Workspace:FindFirstChildOfClass("Terrain");
-    if teren then
-        adaugaLog("Terenul nativ a fost detectat in Workspace. Se forteaza salvarea lui.");
-        teren.Archivable = true;
-    else
-        adaugaLog("AVERTISMENT: Terenul (Workspace.Terrain) nu a fost gasit!");
+    if streamListener then
+        streamListener:Disconnect()
+        streamListener = nil
     end
 
-    CacheFolder.Parent = Workspace;
+    CacheFolder.Parent = Workspace
+
+    local terenFinal = Workspace:FindFirstChildOfClass("Terrain")
+    if terenFinal then
+        terenFinal.Archivable = true
+        adaugaLog("Terrain pregătit pentru salvare. Archivable = true")
+    end
 
     local Options = {
-        Mode = "optimized",           
-        SaveTerrain = true,           
-        IgnoreTerrain = false,
-        IsPlace = true,               
-        Decompile = false,            
+        Mode = "optimized",
+        SaveTerrain = terenSuportat,
+        IgnoreTerrain = not terenSuportat,
+        IsPlace = true,
+        Decompile = false,
         DecompileIgnore = {"CorePackages", "CoreGui"},
-        FileName = "Harta_Teren_Test",
+        FileName = "Harta_Teren_Salvata",
         Object = game,
         ShowStatus = true,
-        __DEBUG_MODE = true
-    };
+    }
 
-    adaugaLog("Se apeleaza functia nativa de salvare. Jocul se va bloca...");
+    adaugaLog("Opțiuni salvare:")
+    adaugaLog("  SaveTerrain = " .. tostring(Options.SaveTerrain))
+    adaugaLog("  IgnoreTerrain = " .. tostring(Options.IgnoreTerrain))
+    adaugaLog("  Obiecte cached: " .. tostring(totalObjectsCached))
+    adaugaLog("Se apelează synsaveinstance()...")
 
     local success, err = pcall(function()
-        synsaveinstance(Options);
-    end);
+        synsaveinstance(Options)
+    end)
 
     if success then
-        adaugaLog("EXPORT FINALIZAT CU SUCCES! Extensia ar trebui sa fie .rbxlx");
+        adaugaLog("SALVARE FINALIZATĂ CU SUCCES!")
     else
-        afiseazaPeEcran("EROARE CRITICA LA SALVARE: " .. tostring(err), true);
+        adaugaLog("EROARE LA SALVARE: " .. tostring(err))
+
+        -- Retry automat fără teren dacă a picat
+        if terenSuportat then
+            adaugaLog("Se reîncearcă FĂRĂ teren...")
+            Options.SaveTerrain = false
+            Options.IgnoreTerrain = true
+            Options.FileName = "Harta_FARA_Teren_Backup"
+
+            local s2, e2 = pcall(function()
+                synsaveinstance(Options)
+            end)
+
+            if s2 then
+                adaugaLog("Salvare BACKUP (fără teren) reușită!")
+            else
+                adaugaLog("EROARE și la backup: " .. tostring(e2))
+            end
+        end
     end
 
-    CacheFolder:Destroy();
-    table.clear(processedUIDs);
-    logConnection:Disconnect();
-    afiseazaPeEcran("VERIFICA ERORILE DE MAI SUS. FA UN SCREENSHOT DACA VEZI TEXT ROSU!", false);
+    pcall(function() CacheFolder:Destroy() end)
+    table.clear(processedUIDs)
+
+    logConnection:Disconnect()
+    pcall(function()
+        writefile("Delta_Log_Salvare.txt", logData)
+    end)
+
+    print("\n[Delta System] Gata! Verifică fișierul salvat și 'Delta_Log_Salvare.txt'.\n")
 end
 
-print("[Delta System] Setup finalizat. Cheama _G.SalveazaHartaFinala() cand esti gata.");
-```
+print("[Delta System] Setup complet. Cheamă _G.SalveazaHartaFinala() când ești gata.")
+if not terenSuportat then
+    warn("[Delta System] ATENȚIE: Executor-ul tău NU suportă ReadVoxels. Terenul nu va fi salvat.")
+    warn("[Delta System] Pentru teren, ai nevoie de un executor pe PC (Synapse, Wave, Fluxus).")
+end
