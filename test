@@ -1,191 +1,182 @@
--- [DELTA SYSTEM] Script cu URL-ul original + diagnostic
-local logData = "=== [DELTA SYSTEM] JURNAL DE DEBUG ===\n"
-local LogService = game:GetService("LogService")
-
-local logConnection = LogService.MessageOut:Connect(function(message, messageType)
-    logData = logData .. os.date("[%X] ") .. "[" .. tostring(messageType) .. "] " .. message .. "\n"
-end)
-
-local function adaugaLog(msg)
-    print(msg)
-    logData = logData .. os.date("[%X] ") .. "[Delta Custom] " .. msg .. "\n"
-end
-
-adaugaLog("Se inițializează scriptul...")
-
--- URL-ul tău original
-local RepoURL = "https://raw.githubusercontent.com/luau/SynSaveInstance/main/"
-local SSI = "saveinstance"
-local fullURL = RepoURL .. SSI .. ".luau"
-
-adaugaLog("URL folosit: " .. fullURL)
-
--- Pas 1: Descărcăm codul
-local okGet, rawCode = pcall(function()
-    return game:HttpGet(fullURL, true)
-end)
-
-if not okGet then
-    adaugaLog("EROARE: HttpGet a eșuat: " .. tostring(rawCode))
-    return
-end
-
-if not rawCode or #rawCode < 100 then
-    adaugaLog("EROARE: Codul descărcat e gol sau prea scurt (" .. tostring(rawCode and #rawCode or 0) .. " caractere)")
-    return
-end
-
-adaugaLog("Cod descărcat cu succes: " .. tostring(#rawCode) .. " caractere")
-
--- Pas 2: Compilăm cu loadstring
-local okLoad, compiled = pcall(function()
-    return loadstring(rawCode, SSI)
-end)
-
-if not okLoad then
-    adaugaLog("EROARE: loadstring a eșuat la compilare: " .. tostring(compiled))
-    return
-end
-
-if not compiled then
-    adaugaLog("EROARE: loadstring a returnat nil — executor-ul NU poate compila SSI!")
-    adaugaLog("Asta e o limitare a Delta. Încearcă un alt executor.")
-    return
-end
-
-adaugaLog("loadstring OK, se execută...")
-
--- Pas 3: Executăm funcția compilată
-local okExec, synsaveinstance = pcall(compiled)
-
-if not okExec then
-    adaugaLog("EROARE: Execuția SSI a eșuat: " .. tostring(synsaveinstance))
-    return
-end
-
-if not synsaveinstance then
-    adaugaLog("EROARE: SSI s-a executat dar a returnat nil!")
-    return
-end
-
-adaugaLog("SSI încărcat cu succes!")
-
--- Restul scriptului
+-- [DELTA FIX] Variantă care ocolește problema loadstring
 local Workspace = game:GetService("Workspace")
 local Lighting = game:GetService("Lighting")
 local Players = game:GetService("Players")
 
+print("[Delta] Start...")
+
+-- TESTĂM ce funcționează pe acest executor
+local hasLoadstring = pcall(function() loadstring("return true")() end)
+local hasHttpGet = pcall(function() game:HttpGet("https://httpbin.org/get", true) end)
+
+print("[Delta] loadstring: " .. tostring(hasLoadstring))
+print("[Delta] HttpGet: " .. tostring(hasHttpGet))
+
+-- Încercăm TOATE metodele posibile de a încărca SSI
+local synsaveinstance = nil
+
+-- Metoda 1: saveinstance nativ (unele versiuni de Delta îl au built-in)
+if saveinstance then
+    synsaveinstance = saveinstance
+    print("[Delta] Folosim saveinstance nativ (built-in)!")
+elseif syn and syn.saveinstance then
+    synsaveinstance = syn.saveinstance
+    print("[Delta] Folosim syn.saveinstance!")
+elseif KRNL_LOADED and saveinstance then
+    synsaveinstance = saveinstance
+    print("[Delta] Folosim KRNL saveinstance!")
+end
+
+-- Metoda 2: loadstring + HttpGet
+if not synsaveinstance and hasLoadstring and hasHttpGet then
+    local urls = {
+        "https://raw.githubusercontent.com/luau/SynSaveInstance/main/saveinstance.luau",
+        "https://raw.githubusercontent.com/luau/UniversalSynSaveInstance/main/saveinstance.luau",
+    }
+    for _, url in ipairs(urls) do
+        local ok, result = pcall(function()
+            local code = game:HttpGet(url, true)
+            if code and #code > 100 then
+                local fn = loadstring(code)
+                if fn then return fn() end
+            end
+            return nil
+        end)
+        if ok and result then
+            synsaveinstance = result
+            print("[Delta] SSI încărcat de la: " .. url)
+            break
+        else
+            print("[Delta] Eșuat la: " .. url .. " -> " .. tostring(result))
+        end
+    end
+end
+
+-- Metoda 3: require (unele executoare suportă asta)
+if not synsaveinstance then
+    pcall(function()
+        synsaveinstance = require(14898888382) -- ID-ul SSI pe Roblox dacă e publicat
+    end)
+    if synsaveinstance then
+        print("[Delta] SSI încărcat prin require!")
+    end
+end
+
+if not synsaveinstance then
+    warn("============================================")
+    warn("[Delta] NU S-A PUTUT ÎNCĂRCA NICIO METODĂ DE SALVARE!")
+    warn("")
+    warn("Executor-ul tău nu suportă:")
+    if not hasLoadstring then warn("  - loadstring (LIPSĂ)") end
+    if not hasHttpGet then warn("  - HttpGet (LIPSĂ)") end
+    warn("")
+    warn("Verifică dacă Delta are saveinstance built-in.")
+    warn("Încearcă în consolă: print(saveinstance)")
+    warn("Sau încearcă: print(type(syn))")
+    warn("============================================")
+
+    pcall(function()
+        writefile("Delta_Diagnostic.txt",
+            "loadstring: " .. tostring(hasLoadstring) .. "\n" ..
+            "HttpGet: " .. tostring(hasHttpGet) .. "\n" ..
+            "saveinstance global: " .. tostring(saveinstance) .. "\n" ..
+            "syn: " .. tostring(syn) .. "\n"
+        )
+    end)
+    return
+end
+
+-- ===================== CACHE + SALVARE =====================
 local teren = Workspace:FindFirstChildOfClass("Terrain")
 local terenSuportat = false
 
 if teren then
     teren.Archivable = true
-    local okRead, errRead = pcall(function()
-        local region = Region3.new(Vector3.new(0, 0, 0), Vector3.new(4, 4, 4))
-        region = region:ExpandToGrid(4)
-        teren:ReadVoxels(region, 4)
+    local ok = pcall(function()
+        local r = Region3.new(Vector3.new(0,0,0), Vector3.new(4,4,4)):ExpandToGrid(4)
+        teren:ReadVoxels(r, 4)
     end)
-    if okRead then
-        terenSuportat = true
-        adaugaLog("ReadVoxels FUNCȚIONEAZĂ — terenul VA fi salvat.")
-    else
-        adaugaLog("ReadVoxels NU merge: " .. tostring(errRead))
-    end
+    terenSuportat = ok
+    print("[Delta] ReadVoxels: " .. tostring(ok))
 end
 
-local CacheFolder = Lighting:FindFirstChild("Delta_Map_Cache_Protected")
-if not CacheFolder then
-    CacheFolder = Instance.new("Folder")
-    CacheFolder.Name = "Delta_Map_Cache_Protected"
-    CacheFolder.Parent = Lighting
-end
+local CacheFolder = Instance.new("Folder")
+CacheFolder.Name = "Delta_Cache"
+CacheFolder.Parent = Lighting
 
-local processedUIDs = {}
-local totalObjectsCached = 0
+local processed = {}
+local cached = 0
 
-local function cacheInstance(inst)
+local function cacheInst(inst)
     if inst:IsA("Terrain") then return end
     if not inst:IsA("BasePart") and not inst:IsA("Model") then return end
     if inst:IsDescendantOf(Players) then return end
     if inst:IsDescendantOf(CacheFolder) then return end
 
-    local uid = inst:GetDebugId()
-    if processedUIDs[uid] then return end
-    processedUIDs[uid] = true
+    local id = inst:GetDebugId()
+    if processed[id] then return end
+    processed[id] = true
 
     task.spawn(function()
-        local ok, clona = pcall(function() return inst:Clone() end)
-        if ok and clona then
-            clona.Archivable = true
-            if clona:IsA("BasePart") then
-                clona.Anchored = true
-            else
-                for _, desc in ipairs(clona:GetDescendants()) do
-                    if desc:IsA("BasePart") then
-                        desc.Anchored = true
-                        desc.Archivable = true
-                    end
-                end
-            end
-            clona.Parent = CacheFolder
-            totalObjectsCached = totalObjectsCached + 1
+        local ok, c = pcall(function() return inst:Clone() end)
+        if ok and c then
+            c.Archivable = true
+            if c:IsA("BasePart") then c.Anchored = true
+            else for _, d in ipairs(c:GetDescendants()) do
+                if d:IsA("BasePart") then d.Anchored = true; d.Archivable = true end
+            end end
+            c.Parent = CacheFolder
+            cached = cached + 1
         end
     end)
 end
 
-adaugaLog("SCANARE HARTĂ PORNITĂ...")
-for _, v in ipairs(Workspace:GetDescendants()) do
-    cacheInstance(v)
-end
-local streamListener = Workspace.DescendantAdded:Connect(cacheInstance)
-adaugaLog("Scanare completă. Obiecte: " .. tostring(totalObjectsCached))
+for _, v in ipairs(Workspace:GetDescendants()) do cacheInst(v) end
+local listener = Workspace.DescendantAdded:Connect(cacheInst)
+print("[Delta] Cache: " .. tostring(cached) .. " obiecte")
 
 _G.SalveazaHartaFinala = function()
-    adaugaLog("=== SALVARE ===")
-    if streamListener then streamListener:Disconnect() end
+    print("[Delta] Salvare...")
+    if listener then listener:Disconnect() end
     CacheFolder.Parent = Workspace
 
-    local terenFinal = Workspace:FindFirstChildOfClass("Terrain")
-    if terenFinal then terenFinal.Archivable = true end
+    if teren then teren.Archivable = true end
 
-    local Options = {
-        Mode = "optimized",
-        SaveTerrain = terenSuportat,
-        IgnoreTerrain = not terenSuportat,
-        IsPlace = true,
-        Decompile = false,
-        DecompileIgnore = {"CorePackages", "CoreGui"},
-        FileName = "Harta_Teren_Salvata",
-        Object = game,
-        ShowStatus = true,
-    }
+    local ok, err = pcall(function()
+        synsaveinstance({
+            Mode = "optimized",
+            SaveTerrain = terenSuportat,
+            IgnoreTerrain = not terenSuportat,
+            IsPlace = true,
+            Decompile = false,
+            DecompileIgnore = {"CorePackages", "CoreGui"},
+            FileName = "Harta_Salvata",
+            Object = game,
+            ShowStatus = true,
+        })
+    end)
 
-    adaugaLog("SaveTerrain=" .. tostring(Options.SaveTerrain))
-
-    local success, err = pcall(function() synsaveinstance(Options) end)
-
-    if success then
-        adaugaLog("SALVARE REUȘITĂ!")
+    if ok then
+        print("[Delta] SALVARE REUȘITĂ!")
     else
-        adaugaLog("EROARE: " .. tostring(err))
+        warn("[Delta] Eroare: " .. tostring(err))
         if terenSuportat then
-            adaugaLog("Retry fără teren...")
-            Options.SaveTerrain = false
-            Options.IgnoreTerrain = true
-            Options.FileName = "Harta_FARA_Teren"
-            local s2, e2 = pcall(function() synsaveinstance(Options) end)
-            adaugaLog(s2 and "Backup reușit!" or ("Backup eșuat: " .. tostring(e2)))
+            print("[Delta] Retry fără teren...")
+            local s2 = pcall(function()
+                synsaveinstance({
+                    Mode = "optimized", SaveTerrain = false, IgnoreTerrain = true,
+                    IsPlace = true, Decompile = false, FileName = "Harta_Fara_Teren",
+                    Object = game, ShowStatus = true,
+                })
+            end)
+            print(s2 and "[Delta] Backup OK!" or "[Delta] Backup eșuat.")
         end
     end
 
     pcall(function() CacheFolder:Destroy() end)
-    table.clear(processedUIDs)
-    logConnection:Disconnect()
-    pcall(function() writefile("Delta_Log_Salvare.txt", logData) end)
-    print("[Delta] Gata! Verifică Delta_Log_Salvare.txt")
 end
 
-print("[Delta] Setup OK. Cheamă _G.SalveazaHartaFinala() când ești gata.")
+print("[Delta] GATA! Cheamă _G.SalveazaHartaFinala()")
 if not terenSuportat then
-    warn("[Delta] ReadVoxels nu merge — terenul NU va fi salvat.")
+    warn("[Delta] Terenul NU va fi salvat (ReadVoxels lipsă).")
 end
