@@ -1,307 +1,135 @@
---[[
-============================================================
-  REBIRTH HUNTER v1 — Creative Exploit Finder
-  Testeaza 10 metode neconventionale. Ruleaza si urmareste
-  output-ul din console (F9). Fiecare test iti spune
-  daca a mers sau nu.
-============================================================
---]]
-
-local Players = game:GetService("Players")
-local RS = game:GetService("ReplicatedStorage")
-
-local player = Players.LocalPlayer
-local stats = player:WaitForChild("ClickerStats")
-local Remotes = RS:WaitForChild("Remotes")
-
-local function snap()
-    return {
-        clicks = stats.Clicks.Value,
-        rebirths = stats.RebirthCount.Value,
-        towerMulti = stats.TowerMultiplier.Value,
-        totalMulti = stats.TotalMultiplier.Value,
-        clickBoost = stats.ClickBoostMultiplier.Value,
-        friendMulti = stats.FriendMultiplier.Value,
-        swarmMulti = stats.SwarmMultiplier.Value,
-        vip = stats.VipOwned.Value,
-        rebirthMulti = stats.RebirthMultiplier.Value,
-        clickPower = stats.ClickPower.Value,
-        rewardPerTap = stats.RewardPerTap.Value,
-    }
-end
-
-local function diff(before, after)
-    local changes = {}
-    for k, v in pairs(before) do
-        if after[k] ~= v then
-            table.insert(changes, k .. ": " .. tostring(v) .. " -> " .. tostring(after[k]))
-        end
-    end
-    return changes
-end
-
-local function report(testName, before, after)
-    local d = diff(before, after)
-    if #d > 0 then
-        print(">>> [HIT!] " .. testName .. " CHANGED SOMETHING:")
-        for _, c in ipairs(d) do
-            print("      " .. c)
-        end
-    else
-        print("    [miss] " .. testName .. " — no change")
-    end
-end
-
-print("========================================")
-print(" REBIRTH HUNTER — Starting 10 tests")
-print(" Watch for [HIT!] lines")
-print("========================================")
-
--- =====================================================
--- TEST 1: ClickAction with arguments
--- Maybe the server accepts a "power" or "count" argument
--- =====================================================
-print("\n[TEST 1] ClickAction with arguments...")
-local b1 = snap()
-pcall(function()
-    Remotes.ClickAction:FireServer(1000)
-    task.wait(0.3)
-    Remotes.ClickAction:FireServer("super")
-    task.wait(0.3)
-    Remotes.ClickAction:FireServer(true, 9999)
-    task.wait(0.3)
-    Remotes.ClickAction:FireServer({amount = 999999})
-end)
-task.wait(0.5)
-report("ClickAction args", b1, snap())
-
--- =====================================================
--- TEST 2: VIPEvent — try to activate VIP
--- Fire with various arguments that might trick the server
--- =====================================================
-print("\n[TEST 2] VIPEvent fire attempts...")
-local b2 = snap()
-pcall(function()
-    Remotes.VIPEvent:FireServer()
-    task.wait(0.2)
-    Remotes.VIPEvent:FireServer(true)
-    task.wait(0.2)
-    Remotes.VIPEvent:FireServer("activate")
-    task.wait(0.2)
-    Remotes.VIPEvent:FireServer(player)
-end)
-task.wait(0.5)
-report("VIPEvent", b2, snap())
-
--- =====================================================
--- TEST 3: AdminPanelCommand — try common commands
--- Admin abuse games often have commands like these
--- =====================================================
-print("\n[TEST 3] AdminPanelCommand...")
-local b3 = snap()
-local cmds = {
-    "give_clicks", "add_clicks", "rebirth", "skip_rebirth",
-    "max_clicks", "boost", "vip", "multiply",
-    "god", "infinite", "reset_cost",
+local Params = {
+    RepoURL = "https://raw.githubusercontent.com/luau/SynSaveInstance/main/",
+    SSI = "saveinstance",
 }
-for _, cmd in ipairs(cmds) do
-    pcall(function()
-        Remotes.AdminPanelCommand:InvokeServer(cmd)
-    end)
-    task.wait(0.1)
-    pcall(function()
-        Remotes.AdminPanelCommand:InvokeServer(cmd, 999999999)
-    end)
-    task.wait(0.1)
-end
-task.wait(0.5)
-report("AdminPanelCommand", b3, snap())
 
--- =====================================================
--- TEST 4: OnboardingStep — retrigger onboarding rewards
--- =====================================================
-print("\n[TEST 4] OnboardingStep retrigger...")
-local b4 = snap()
-pcall(function()
-    for i = 1, 10 do
-        Remotes.OnboardingStep:FireServer(i)
-        task.wait(0.1)
-    end
-    Remotes.OnboardingStep:FireServer("complete")
-    task.wait(0.1)
-    Remotes.OnboardingStep:FireServer("reward")
-end)
-task.wait(0.5)
-report("OnboardingStep", b4, snap())
+-- Încărcăm librăria de salvare (Universal SaveInstance)
+local synsaveinstance = loadstring(game:HttpGet(Params.RepoURL .. Params.SSI .. ".luau", true), Params.SSI)()
 
--- =====================================================
--- TEST 5: AdminAbuseSpinRemote — trigger a spin
--- Might give buffs to all players
--- =====================================================
-print("\n[TEST 5] AdminAbuseSpin...")
-local b5 = snap()
-pcall(function()
-    Remotes.AdminAbuseSpinRemote:FireServer()
-    task.wait(0.3)
-    Remotes.AdminAbuseSpinRemote:FireServer("finale")
-    task.wait(0.3)
-    -- Try to pick a specific option
-    for i = 1, 44 do
-        pcall(function()
-            Remotes.AdminAbuseSpinRemote:FireServer(i)
+local Workspace = game:GetService("Workspace")
+local Lighting = game:GetService("Lighting")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+-- Creăm un folder "ascuns" în Lighting. 
+-- Folosim Lighting deoarece obiectele de aici NU sunt șterse de sistemul de Streaming.
+local CacheFolder = Instance.new("Folder")
+CacheFolder.Name = "Delta_Map_Cache_Protected"
+CacheFolder.Parent = Lighting
+
+local processedUIDs = {}
+local totalObjectsCached = 0
+local activeThreads = 0
+
+local function cacheInstance(inst)
+    -- Filtrăm doar piesele și modelele valide. Evităm jucătorii, terenul nativ și dublurile.
+    if not inst:IsA("BasePart") and not inst:IsA("Model") then return end
+    if inst:IsA("Terrain") then return end
+    if inst:IsDescendantOf(Players) then return end
+    if inst:IsDescendantOf(CacheFolder) then return end
+    
+    local uid = inst:GetDebugId()
+    
+    if not processedUIDs[uid] then
+        processedUIDs[uid] = true
+        activeThreads = activeThreads + 1
+        
+        -- Clonăm asincron pentru a nu bloca telefonul/emulatorul
+        task.spawn(function()
+            local success, clona = pcall(function()
+                local c = inst:Clone()
+                if c then
+                    c.Archivable = true -- Foarte important pentru a permite salvarea
+                    
+                    -- Ancorăm obiectele ca să nu cadă harta în gol în Studio
+                    if c:IsA("BasePart") then
+                        c.Anchored = true
+                    else
+                        for _, desc in ipairs(c:GetDescendants()) do
+                            if desc:IsA("BasePart") then
+                                desc.Anchored = true
+                                desc.Archivable = true
+                            end
+                        end
+                    end
+                end
+                return c
+            end)
+            
+            if success and clona then
+                clona.Parent = CacheFolder
+                totalObjectsCached = totalObjectsCached + 1
+            end
+            
+            activeThreads = activeThreads - 1
         end)
     end
-end)
-task.wait(1)
-report("AdminAbuseSpin", b5, snap())
-
--- =====================================================
--- TEST 6: Tower version sync + Finish
--- Set client TowerVersion to match Information's value
--- then fire Finish
--- =====================================================
-print("\n[TEST 6] Tower version sync exploit...")
-local b6 = snap()
-pcall(function()
-    local info = RS:FindFirstChild("Information")
-    local obbyInfo = RS:FindFirstChild("ObbyTowerInfo")
-    if info and obbyInfo then
-        local realVersion = info:FindFirstChild("TowerVersion")
-        local obbyVersion = obbyInfo:FindFirstChild("TowerVersion")
-        if realVersion and obbyVersion then
-            print("  Syncing TowerVersion: " .. obbyVersion.Value .. " -> " .. realVersion.Value)
-            obbyVersion.Value = realVersion.Value
-        end
-    end
-    task.wait(0.2)
-
-    -- TP to TowerEnd
-    local te = workspace:FindFirstChild("TowerEnd")
-    if te then
-        local c = player.Character
-        if c and c:FindFirstChild("HumanoidRootPart") then
-            c.HumanoidRootPart.CFrame = CFrame.new(te.Position + Vector3.new(0, 3, 0))
-        end
-    end
-    task.wait(0.3)
-    RS.Finish:FireServer()
-    task.wait(0.5)
-    RS.Finish:FireServer()
-end)
-task.wait(1)
-report("Tower version sync", b6, snap())
-
--- =====================================================
--- TEST 7: FriendBoost manipulation
--- Try to tell the server we have friends
--- =====================================================
-print("\n[TEST 7] FriendBoost...")
-local b7 = snap()
-pcall(function()
-    -- Try firing the update event
-    Remotes.FriendBoostUpdated:FireServer(10)
-    task.wait(0.2)
-    Remotes.FriendBoostUpdated:FireServer({count = 50})
-    task.wait(0.2)
-    -- Try the RemoteFunction
-    local result = Remotes.GetFriendBoost:InvokeServer()
-    print("  GetFriendBoost returned: " .. tostring(result))
-end)
-task.wait(0.5)
-report("FriendBoost", b7, snap())
-
--- =====================================================
--- TEST 8: PurchaseClickUpgrade with fake upgrade names
--- What if there are hidden upgrade types?
--- =====================================================
-print("\n[TEST 8] Hidden upgrades...")
-local b8 = snap()
-local fakeUpgrades = {
-    "RebirthMulti", "TowerMulti", "SwarmMulti", "FriendMulti",
-    "ClickBoost", "SuperClick", "MegaClick", "Rebirth",
-    "AllMulti", "Permanent", "PetBonus", "VIP",
-}
-for _, name in ipairs(fakeUpgrades) do
-    pcall(function()
-        Remotes.PurchaseClickUpgrade:InvokeServer(name)
-    end)
-    task.wait(0.05)
 end
-task.wait(0.5)
-report("Hidden upgrades", b8, snap())
 
--- =====================================================
--- TEST 9: AddValue with different argument patterns
--- The first test just did ("Clicks", n). Try others.
--- =====================================================
-print("\n[TEST 9] AddValue arg patterns...")
-local b9 = snap()
-pcall(function()
-    -- Maybe it wants different stat names
-    RS.AddValue:FireServer("RebirthCount", 100)
-    task.wait(0.1)
-    RS.AddValue:FireServer("TowerMultiplier", 100)
-    task.wait(0.1)
-    RS.AddValue:FireServer("ClickPower", 99999)
-    task.wait(0.1)
-    RS.AddValue:FireServer("RebirthMultiplier", 100)
-    task.wait(0.1)
-    -- Maybe it uses the player's stat path
-    RS.AddValue:FireServer(stats.Clicks, 999999999)
-    task.wait(0.1)
-    -- Maybe just a raw number adds to "default" stat
-    RS.AddValue:FireServer(999999999)
-    task.wait(0.1)
-    -- Maybe it's for a different system entirely
-    RS.AddValue:FireServer("Coins", 999999999)
-    task.wait(0.1)
-    RS.AddValue:FireServer("Gems", 999999999)
-    task.wait(0.1)
-    RS.AddValue:FireServer("LuckyBlocks", 100)
+print("[Delta System] Scanare inițială a hărții pornită...")
+
+-- Indexăm tot ce există deja în jurul tău
+for _, v in ipairs(Workspace:GetDescendants()) do
+    cacheInstance(v)
+end
+
+-- Ascultăm noile zone care apar când te miști (StreamingEnabled)
+local streamListener = Workspace.DescendantAdded:Connect(cacheInstance)
+
+-- Afișăm progresul din fundal o dată la 5 secunde
+local notifyRoutine = task.spawn(function()
+    while true do
+        task.wait(5)
+        if totalObjectsCached > 0 then
+            print("[Delta System] Se înregistrează zone noi... Obiecte stocate în RAM: " .. tostring(totalObjectsCached))
+        end
+    end
 end)
-task.wait(0.5)
-report("AddValue patterns", b9, snap())
 
--- =====================================================
--- TEST 10: RequestSkipRebirth with arguments
--- Maybe passing arguments changes behavior
--- =====================================================
-print("\n[TEST 10] RequestSkipRebirth with args...")
-local b10 = snap()
-pcall(function()
-    -- Try with "free" flag
-    Remotes.RequestSkipRebirth:InvokeServer(true)
-    task.wait(0.3)
-    Remotes.RequestSkipRebirth:InvokeServer("free")
-    task.wait(0.3)
-    Remotes.RequestSkipRebirth:InvokeServer(0) -- cost = 0?
-    task.wait(0.3)
-    Remotes.RequestSkipRebirth:InvokeServer({skipCost = true})
-end)
-task.wait(0.5)
-report("SkipRebirth args", b10, snap())
+-- Comanda de declanșare a salvării
+_G.SalveazaHartaFinala = function()
+    print("[Delta System] Se pregătește salvarea finală a hărții...")
+    
+    -- Oprim scanarea pentru a nu suprasolicita procesorul în timpul scrierii
+    if streamListener then streamListener:Disconnect() end
+    if notifyRoutine then task.cancel(notifyRoutine) end
+    
+    -- Așteptăm să se termine orice clonare aflată în desfășurare
+    while activeThreads > 0 do
+        RunService.RenderStepped:Wait()
+    end
+    
+    print("[Delta System] Se mută obiectele din cache înapoi în Workspace...")
+    CacheFolder.Parent = Workspace 
+    
+    local Options = {
+        Mode = "optimized",           -- Optimizează texturile pentru a reduce dimensiunea
+        SaveTrained = true,           -- Salvează terenul nativ (Iarbă, Pământ, Apă)
+        Decompile = false,            -- Ignorăm decompilarea scripturilor ca să nu primim crash pe Delta
+        DecompileIgnore = {"CorePackages", "CoreGui"},
+        FileName = "Harta_Optimizata_Delta_Final",
+        Object = Workspace            -- Salvăm tot Workspace-ul (care acum include și cache-ul nostru masiv)
+    }
+    
+    print("[Delta System] Se generează fișierul... Jocul se va bloca scurt timp, nu atinge ecranul!")
+    
+    -- Funcția nativă de salvare
+    local success, err = pcall(function()
+        synsaveinstance(Options)
+    end)
+    
+    if success then
+        print("[Delta System] ✅ SUCCES! Harta a fost salvată în Delta/workspace sub numele 'Harta_Optimizata_Delta_Final'")
+        print("[Delta System] Obiecte unice recuperate cu succes: " .. tostring(totalObjectsCached))
+    else
+        warn("[Delta System] ❌ Eroare la salvare: " .. tostring(err))
+    end
+    
+    -- Eliberăm memoria RAM la final pentru a nu închide jocul forțat
+    CacheFolder:Destroy()
+    table.clear(processedUIDs)
+end
 
--- =====================================================
--- BONUS: Check if any client values actually replicate
--- Set clicks client-side, then try rebirth
--- =====================================================
-print("\n[BONUS] Client value + rebirth combo...")
-local b11 = snap()
-pcall(function()
-    -- Pump client clicks
-    stats.Clicks.Value = 999999999999
-    task.wait(0.1)
-    -- Immediately try rebirth
-    Remotes.RequestSkipRebirth:InvokeServer()
-    task.wait(0.5)
-    -- Also try normal args
-    Remotes.RequestSkipRebirth:InvokeServer(true)
-end)
-task.wait(0.5)
-report("Client pump + rebirth", b11, snap())
-
-print("\n========================================")
-print(" REBIRTH HUNTER — ALL TESTS COMPLETE")
-print(" Check above for [HIT!] lines")
-print(" If something hit, tell me which one!")
-print("========================================")
+print("[Delta System] ✅ Setup complet. Plimbă-te pe hartă (pe jos sau cu Fly) pentru a încărca zone noi.")
+print("[Delta System] 📌 Când ai terminat de explorat, șterge editorul, scrie '_G.SalveazaHartaFinala()' și apasă Execute.")
+```
