@@ -1,4 +1,19 @@
--- Ascundem anumite erori native ale Roblox-ului din consola Delta pentru a nu fi distras
+-- Inițializare sistem de Log-uri custom
+local logData = "=== [DELTA SYSTEM] JURNAL DE DEBUG PENTRU SALVAREA TERENULUI ===\n"
+local LogService = game:GetService("LogService")
+
+-- Capturăm absolut toate mesajele și erorile ascunse din consolă
+local logConnection = LogService.MessageOut:Connect(function(message, messageType)
+    logData = logData .. os.date("[%X] ") .. "[" .. tostring(messageType) .. "] " .. message .. "\n"
+end)
+
+local function adaugaLog(msg)
+    print(msg)
+    logData = logData .. os.date("[%X] ") .. "[Delta Custom] " .. msg .. "\n"
+end
+
+adaugaLog("Se inițializează scriptul și se descarcă librăria...")
+
 local CoreGui = game:GetService("CoreGui")
 local Params = {
     RepoURL = "https://raw.githubusercontent.com/luau/SynSaveInstance/main/",
@@ -6,7 +21,13 @@ local Params = {
 }
 
 -- Încărcăm librăria
-local synsaveinstance = loadstring(game:HttpGet(Params.RepoURL .. Params.SSI .. ".luau", true), Params.SSI)()
+local succesLib, synsaveinstance = pcall(function()
+    return loadstring(game:HttpGet(Params.RepoURL .. Params.SSI .. ".luau", true), Params.SSI)()
+end)
+
+if not succesLib then
+    adaugaLog("EROARE CRITICĂ: Nu s-a putut încărca librăria SynSaveInstance!")
+end
 
 local Workspace = game:GetService("Workspace")
 local Lighting = game:GetService("Lighting")
@@ -22,10 +43,9 @@ end
 local processedUIDs = {}
 local totalObjectsCached = 0
 
--- Funcția de capturare a clădirilor noi în timp ce te plimbi
 local function cacheInstance(inst)
     if not inst:IsA("BasePart") and not inst:IsA("Model") then return end
-    if inst:IsA("Terrain") then return end -- Terenul este un obiect unic, îl tratăm la final
+    if inst:IsA("Terrain") then return end 
     if inst:IsDescendantOf(Players) then return end
     if inst:IsDescendantOf(CacheFolder) then return end
     
@@ -57,9 +77,7 @@ local function cacheInstance(inst)
     end
 end
 
-print("\n\n-----------------------------------------")
-print("[Delta System] V5 - SCANARE HARTĂ + TEREN PORNITĂ")
-print("-----------------------------------------\n")
+adaugaLog("SCANARE HARTĂ + TEREN PORNITĂ")
 
 for _, v in ipairs(Workspace:GetDescendants()) do
     cacheInstance(v)
@@ -67,46 +85,60 @@ end
 
 local streamListener = Workspace.DescendantAdded:Connect(cacheInstance)
 
-local notifyRoutine = task.spawn(function()
-    while true do
-        task.wait(5)
-        if totalObjectsCached > 0 then
-            print("[Delta Tracker] Obiecte arhivate: " .. tostring(totalObjectsCached))
-        end
-    end
-end)
-
--- Funcția pe care o chemi tu la final
+-- Comanda de final
 _G.SalveazaHartaFinala = function()
-    print("[Delta System] INIȚIALIZARE SALVARE JOC COMPLET... Așteaptă.")
+    adaugaLog("INIȚIALIZARE SALVARE JOC COMPLET... Se pregătește terenul.")
     
     if streamListener then streamListener:Disconnect() end
-    if notifyRoutine then task.cancel(notifyRoutine) end
     
-    -- Aducem clădirile înapoi în vizor pentru a fi salvate
+    -- Verificăm dacă terenul există și poate fi citit
+    local teren = Workspace:FindFirstChildOfClass("Terrain")
+    if teren then
+        adaugaLog("Terenul nativ a fost detectat în Workspace. Se încearcă forțarea salvării lui.")
+        teren.Archivable = true
+    else
+        adaugaLog("AVERTISMENT: Terenul (Workspace.Terrain) nu a fost găsit!")
+    end
+    
     CacheFolder.Parent = Workspace 
     
     local Options = {
         Mode = "optimized",           
-        SaveTerrain = true,           -- CORECTAT: Asta va salva apa, pământul, munții etc.
+        SaveTerrain = true,           
         IgnoreTerrain = false,
-        IsPlace = true,               -- CORECTAT: Asta forțează fișierul să fie .rbxlx (Joc complet gata de deschis)
+        IsPlace = true,               
         Decompile = false,            
         DecompileIgnore = {"CorePackages", "CoreGui"},
-        FileName = "Harta_Completa_Cu_Teren",
-        Object = game                 -- CORECTAT: Salvăm tot universul, nu doar workspace-ul
+        FileName = "Harta_Teren_Test",
+        Object = game,
+        
+        -- SETĂRI NOI DE DEBUG
+        ShowStatus = true,
+        __DEBUG_MODE = true -- Forțează librăria să printeze orice eroare legată de teren
     }
+    
+    adaugaLog("Se apelează funcția nativă de salvare. Jocul se va bloca...")
     
     local success, err = pcall(function()
         synsaveinstance(Options)
     end)
     
     if success then
-        print("\n[Delta System] ✅ EXPORT FINALIZAT CU SUCCES! Caută 'Harta_Completa_Cu_Teren' (extensia .rbxlx) în fișierele Delta.\n")
+        adaugaLog("EXPORT FINALIZAT CU SUCCES! Extensia ar trebui să fie .rbxlx")
     else
-        warn("\n[Delta System] ❌ EROARE: " .. tostring(err) .. "\n")
+        adaugaLog("EROARE LA SALVARE BAZĂ: " .. tostring(err))
     end
     
     CacheFolder:Destroy()
     table.clear(processedUIDs)
+    
+    -- SALVĂM FIȘIERUL DE LOG-URI PE TELEFON
+    logConnection:Disconnect()
+    pcall(function()
+        writefile("Delta_Log_Erori_Teren.txt", logData)
+    end)
+    
+    print("\n[Delta System] Salvarea s-a încheiat. Verifică fișierul 'Delta_Log_Erori_Teren.txt' pentru a vedea de ce pică terenul!\n")
 end
+
+print("[Delta System] Setup finalizat cu sistem de log-uri. Cheamă _G.SalveazaHartaFinala() când ești gata.")
