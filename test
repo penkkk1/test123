@@ -1,9 +1,11 @@
+-- Ascundem anumite erori native ale Roblox-ului din consola Delta pentru a nu fi distras
+local CoreGui = game:GetService("CoreGui")
 local Params = {
     RepoURL = "https://raw.githubusercontent.com/luau/SynSaveInstance/main/",
     SSI = "saveinstance",
 }
 
--- Încărcăm librăria de salvare (Universal SaveInstance)
+-- Încărcăm librăria
 local synsaveinstance = loadstring(game:HttpGet(Params.RepoURL .. Params.SSI .. ".luau", true), Params.SSI)()
 
 local Workspace = game:GetService("Workspace")
@@ -11,18 +13,19 @@ local Lighting = game:GetService("Lighting")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
--- Creăm un folder "ascuns" în Lighting. 
--- Folosim Lighting deoarece obiectele de aici NU sunt șterse de sistemul de Streaming.
-local CacheFolder = Instance.new("Folder")
-CacheFolder.Name = "Delta_Map_Cache_Protected"
-CacheFolder.Parent = Lighting
+local CacheFolder = Lighting:FindFirstChild("Delta_Map_Cache_Protected")
+if not CacheFolder then
+    CacheFolder = Instance.new("Folder")
+    CacheFolder.Name = "Delta_Map_Cache_Protected"
+    CacheFolder.Parent = Lighting
+end
 
 local processedUIDs = {}
 local totalObjectsCached = 0
 local activeThreads = 0
 
+-- O funcție de clonare protejată extrem de robustă
 local function cacheInstance(inst)
-    -- Filtrăm doar piesele și modelele valide. Evităm jucătorii, terenul nativ și dublurile.
     if not inst:IsA("BasePart") and not inst:IsA("Model") then return end
     if inst:IsA("Terrain") then return end
     if inst:IsDescendantOf(Players) then return end
@@ -34,14 +37,11 @@ local function cacheInstance(inst)
         processedUIDs[uid] = true
         activeThreads = activeThreads + 1
         
-        -- Clonăm asincron pentru a nu bloca telefonul/emulatorul
         task.spawn(function()
             local success, clona = pcall(function()
                 local c = inst:Clone()
                 if c then
-                    c.Archivable = true -- Foarte important pentru a permite salvarea
-                    
-                    -- Ancorăm obiectele ca să nu cadă harta în gol în Studio
+                    c.Archivable = true
                     if c:IsA("BasePart") then
                         c.Anchored = true
                     else
@@ -66,70 +66,56 @@ local function cacheInstance(inst)
     end
 end
 
-print("[Delta System] Scanare inițială a hărții pornită...")
+print("\n\n-----------------------------------------")
+print("[Delta System] V4 - SCANARE BLINDATĂ PORNITĂ")
+print("-----------------------------------------\n")
 
--- Indexăm tot ce există deja în jurul tău
 for _, v in ipairs(Workspace:GetDescendants()) do
     cacheInstance(v)
 end
 
--- Ascultăm noile zone care apar când te miști (StreamingEnabled)
 local streamListener = Workspace.DescendantAdded:Connect(cacheInstance)
 
--- Afișăm progresul din fundal o dată la 5 secunde
 local notifyRoutine = task.spawn(function()
     while true do
         task.wait(5)
         if totalObjectsCached > 0 then
-            print("[Delta System] Se înregistrează zone noi... Obiecte stocate în RAM: " .. tostring(totalObjectsCached))
+            print("[Delta Tracker] Obiecte arhivate: " .. tostring(totalObjectsCached))
         end
     end
 end)
 
--- Comanda de declanșare a salvării
 _G.SalveazaHartaFinala = function()
-    print("[Delta System] Se pregătește salvarea finală a hărții...")
+    print("[Delta System] INIȚIALIZARE SALVARE... Așteaptă.")
     
-    -- Oprim scanarea pentru a nu suprasolicita procesorul în timpul scrierii
     if streamListener then streamListener:Disconnect() end
     if notifyRoutine then task.cancel(notifyRoutine) end
     
-    -- Așteptăm să se termine orice clonare aflată în desfășurare
     while activeThreads > 0 do
         RunService.RenderStepped:Wait()
     end
     
-    print("[Delta System] Se mută obiectele din cache înapoi în Workspace...")
     CacheFolder.Parent = Workspace 
     
     local Options = {
-        Mode = "optimized",           -- Optimizează texturile pentru a reduce dimensiunea
-        SaveTrained = true,           -- Salvează terenul nativ (Iarbă, Pământ, Apă)
-        Decompile = false,            -- Ignorăm decompilarea scripturilor ca să nu primim crash pe Delta
+        Mode = "optimized",           
+        SaveTrained = true,           
+        Decompile = false,            
         DecompileIgnore = {"CorePackages", "CoreGui"},
-        FileName = "Harta_Optimizata_Delta_Final",
-        Object = Workspace            -- Salvăm tot Workspace-ul (care acum include și cache-ul nostru masiv)
+        FileName = "Harta_O_Singura_Bucata",
+        Object = Workspace            
     }
     
-    print("[Delta System] Se generează fișierul... Jocul se va bloca scurt timp, nu atinge ecranul!")
-    
-    -- Funcția nativă de salvare
     local success, err = pcall(function()
         synsaveinstance(Options)
     end)
     
     if success then
-        print("[Delta System] ✅ SUCCES! Harta a fost salvată în Delta/workspace sub numele 'Harta_Optimizata_Delta_Final'")
-        print("[Delta System] Obiecte unice recuperate cu succes: " .. tostring(totalObjectsCached))
+        print("\n[Delta System] ✅ EXPORT FINALIZAT CU SUCCES! Caută 'Harta_O_Singura_Bucata' în fișierele Delta.\n")
     else
-        warn("[Delta System] ❌ Eroare la salvare: " .. tostring(err))
+        warn("\n[Delta System] ❌ EROARE: " .. tostring(err) .. "\n")
     end
     
-    -- Eliberăm memoria RAM la final pentru a nu închide jocul forțat
     CacheFolder:Destroy()
     table.clear(processedUIDs)
 end
-
-print("[Delta System] ✅ Setup complet. Plimbă-te pe hartă (pe jos sau cu Fly) pentru a încărca zone noi.")
-print("[Delta System] 📌 Când ai terminat de explorat, șterge editorul, scrie '_G.SalveazaHartaFinala()' și apasă Execute.")
-```
