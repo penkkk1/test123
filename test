@@ -11,7 +11,6 @@ local synsaveinstance = loadstring(game:HttpGet(Params.RepoURL .. Params.SSI .. 
 local Workspace = game:GetService("Workspace")
 local Lighting = game:GetService("Lighting")
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
 
 local CacheFolder = Lighting:FindFirstChild("Delta_Map_Cache_Protected")
 if not CacheFolder then
@@ -22,12 +21,11 @@ end
 
 local processedUIDs = {}
 local totalObjectsCached = 0
-local activeThreads = 0
 
--- O funcție de clonare protejată extrem de robustă
+-- Funcția de capturare a clădirilor noi în timp ce te plimbi
 local function cacheInstance(inst)
     if not inst:IsA("BasePart") and not inst:IsA("Model") then return end
-    if inst:IsA("Terrain") then return end
+    if inst:IsA("Terrain") then return end -- Terenul este un obiect unic, îl tratăm la final
     if inst:IsDescendantOf(Players) then return end
     if inst:IsDescendantOf(CacheFolder) then return end
     
@@ -35,39 +33,32 @@ local function cacheInstance(inst)
     
     if not processedUIDs[uid] then
         processedUIDs[uid] = true
-        activeThreads = activeThreads + 1
         
         task.spawn(function()
-            local success, clona = pcall(function()
-                local c = inst:Clone()
-                if c then
-                    c.Archivable = true
-                    if c:IsA("BasePart") then
-                        c.Anchored = true
+            pcall(function()
+                local clona = inst:Clone()
+                if clona then
+                    clona.Archivable = true
+                    if clona:IsA("BasePart") then
+                        clona.Anchored = true
                     else
-                        for _, desc in ipairs(c:GetDescendants()) do
+                        for _, desc in ipairs(clona:GetDescendants()) do
                             if desc:IsA("BasePart") then
                                 desc.Anchored = true
                                 desc.Archivable = true
                             end
                         end
                     end
+                    clona.Parent = CacheFolder
+                    totalObjectsCached = totalObjectsCached + 1
                 end
-                return c
             end)
-            
-            if success and clona then
-                clona.Parent = CacheFolder
-                totalObjectsCached = totalObjectsCached + 1
-            end
-            
-            activeThreads = activeThreads - 1
         end)
     end
 end
 
 print("\n\n-----------------------------------------")
-print("[Delta System] V4 - SCANARE BLINDATĂ PORNITĂ")
+print("[Delta System] V5 - SCANARE HARTĂ + TEREN PORNITĂ")
 print("-----------------------------------------\n")
 
 for _, v in ipairs(Workspace:GetDescendants()) do
@@ -85,25 +76,25 @@ local notifyRoutine = task.spawn(function()
     end
 end)
 
+-- Funcția pe care o chemi tu la final
 _G.SalveazaHartaFinala = function()
-    print("[Delta System] INIȚIALIZARE SALVARE... Așteaptă.")
+    print("[Delta System] INIȚIALIZARE SALVARE JOC COMPLET... Așteaptă.")
     
     if streamListener then streamListener:Disconnect() end
     if notifyRoutine then task.cancel(notifyRoutine) end
     
-    while activeThreads > 0 do
-        RunService.RenderStepped:Wait()
-    end
-    
+    -- Aducem clădirile înapoi în vizor pentru a fi salvate
     CacheFolder.Parent = Workspace 
     
     local Options = {
         Mode = "optimized",           
-        SaveTrained = true,           
+        SaveTerrain = true,           -- CORECTAT: Asta va salva apa, pământul, munții etc.
+        IgnoreTerrain = false,
+        IsPlace = true,               -- CORECTAT: Asta forțează fișierul să fie .rbxlx (Joc complet gata de deschis)
         Decompile = false,            
         DecompileIgnore = {"CorePackages", "CoreGui"},
-        FileName = "Harta_O_Singura_Bucata",
-        Object = Workspace            
+        FileName = "Harta_Completa_Cu_Teren",
+        Object = game                 -- CORECTAT: Salvăm tot universul, nu doar workspace-ul
     }
     
     local success, err = pcall(function()
@@ -111,7 +102,7 @@ _G.SalveazaHartaFinala = function()
     end)
     
     if success then
-        print("\n[Delta System] ✅ EXPORT FINALIZAT CU SUCCES! Caută 'Harta_O_Singura_Bucata' în fișierele Delta.\n")
+        print("\n[Delta System] ✅ EXPORT FINALIZAT CU SUCCES! Caută 'Harta_Completa_Cu_Teren' (extensia .rbxlx) în fișierele Delta.\n")
     else
         warn("\n[Delta System] ❌ EROARE: " .. tostring(err) .. "\n")
     end
