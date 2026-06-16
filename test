@@ -1,7 +1,4 @@
-- ============================================================
--- [DELTA SYSTEM] Script fixat pentru salvarea hărții + teren
--- ============================================================
-
+-- [DELTA SYSTEM] Script cu URL-ul original + diagnostic
 local logData = "=== [DELTA SYSTEM] JURNAL DE DEBUG ===\n"
 local LogService = game:GetService("LogService")
 
@@ -16,41 +13,64 @@ end
 
 adaugaLog("Se inițializează scriptul...")
 
--- ============================================================
--- 1. Încărcăm librăria SynSaveInstance
--- ============================================================
-local Params = {
-    URLs = {
-        "https://raw.githubusercontent.com/luau/SynSaveInstance/main/saveinstance.luau",
-        "https://raw.githubusercontent.com/luau/UniversalSynSaveInstance/main/saveinstance.luau",
-    }
-}
+-- URL-ul tău original
+local RepoURL = "https://raw.githubusercontent.com/luau/SynSaveInstance/main/"
+local SSI = "saveinstance"
+local fullURL = RepoURL .. SSI .. ".luau"
 
-local synsaveinstance = nil
+adaugaLog("URL folosit: " .. fullURL)
 
-for _, url in ipairs(Params.URLs) do
-    local ok, result = pcall(function()
-        return loadstring(game:HttpGet(url, true), "SSI")()
-    end)
-    if ok and result then
-        synsaveinstance = result
-        adaugaLog("Librăria SSI încărcată cu succes de la: " .. url)
-        break
-    else
-        adaugaLog("Nu s-a putut încărca de la: " .. url .. " | Eroare: " .. tostring(result))
-    end
-end
+-- Pas 1: Descărcăm codul
+local okGet, rawCode = pcall(function()
+    return game:HttpGet(fullURL, true)
+end)
 
-if not synsaveinstance then
-    adaugaLog("EROARE CRITICĂ: Nu s-a putut încărca librăria SynSaveInstance din nicio sursă!")
-    logConnection:Disconnect()
-    pcall(function() writefile("Delta_Log_Erori.txt", logData) end)
+if not okGet then
+    adaugaLog("EROARE: HttpGet a eșuat: " .. tostring(rawCode))
     return
 end
 
--- ============================================================
--- 2. Verificăm suportul pentru teren
--- ============================================================
+if not rawCode or #rawCode < 100 then
+    adaugaLog("EROARE: Codul descărcat e gol sau prea scurt (" .. tostring(rawCode and #rawCode or 0) .. " caractere)")
+    return
+end
+
+adaugaLog("Cod descărcat cu succes: " .. tostring(#rawCode) .. " caractere")
+
+-- Pas 2: Compilăm cu loadstring
+local okLoad, compiled = pcall(function()
+    return loadstring(rawCode, SSI)
+end)
+
+if not okLoad then
+    adaugaLog("EROARE: loadstring a eșuat la compilare: " .. tostring(compiled))
+    return
+end
+
+if not compiled then
+    adaugaLog("EROARE: loadstring a returnat nil — executor-ul NU poate compila SSI!")
+    adaugaLog("Asta e o limitare a Delta. Încearcă un alt executor.")
+    return
+end
+
+adaugaLog("loadstring OK, se execută...")
+
+-- Pas 3: Executăm funcția compilată
+local okExec, synsaveinstance = pcall(compiled)
+
+if not okExec then
+    adaugaLog("EROARE: Execuția SSI a eșuat: " .. tostring(synsaveinstance))
+    return
+end
+
+if not synsaveinstance then
+    adaugaLog("EROARE: SSI s-a executat dar a returnat nil!")
+    return
+end
+
+adaugaLog("SSI încărcat cu succes!")
+
+-- Restul scriptului
 local Workspace = game:GetService("Workspace")
 local Lighting = game:GetService("Lighting")
 local Players = game:GetService("Players")
@@ -60,28 +80,19 @@ local terenSuportat = false
 
 if teren then
     teren.Archivable = true
-    adaugaLog("Terrain găsit în Workspace.")
-
     local okRead, errRead = pcall(function()
         local region = Region3.new(Vector3.new(0, 0, 0), Vector3.new(4, 4, 4))
         region = region:ExpandToGrid(4)
         teren:ReadVoxels(region, 4)
     end)
-
     if okRead then
         terenSuportat = true
         adaugaLog("ReadVoxels FUNCȚIONEAZĂ — terenul VA fi salvat.")
     else
-        adaugaLog("ReadVoxels NU funcționează pe acest executor: " .. tostring(errRead))
-        adaugaLog("Terenul NU va fi salvat. Executorul tău nu suportă această funcție.")
+        adaugaLog("ReadVoxels NU merge: " .. tostring(errRead))
     end
-else
-    adaugaLog("AVERTISMENT: Terrain nu a fost găsit în Workspace.")
 end
 
--- ============================================================
--- 3. Cache obiecte din Workspace (streaming)
--- ============================================================
 local CacheFolder = Lighting:FindFirstChild("Delta_Map_Cache_Protected")
 if not CacheFolder then
     CacheFolder = Instance.new("Folder")
@@ -123,33 +134,19 @@ local function cacheInstance(inst)
 end
 
 adaugaLog("SCANARE HARTĂ PORNITĂ...")
-
 for _, v in ipairs(Workspace:GetDescendants()) do
     cacheInstance(v)
 end
-
 local streamListener = Workspace.DescendantAdded:Connect(cacheInstance)
+adaugaLog("Scanare completă. Obiecte: " .. tostring(totalObjectsCached))
 
-adaugaLog("Scanare inițială completă. Obiecte cached: " .. tostring(totalObjectsCached))
-
--- ============================================================
--- 4. Funcția de salvare finală
--- ============================================================
 _G.SalveazaHartaFinala = function()
-    adaugaLog("=== INIȚIALIZARE SALVARE ===")
-
-    if streamListener then
-        streamListener:Disconnect()
-        streamListener = nil
-    end
-
+    adaugaLog("=== SALVARE ===")
+    if streamListener then streamListener:Disconnect() end
     CacheFolder.Parent = Workspace
 
     local terenFinal = Workspace:FindFirstChildOfClass("Terrain")
-    if terenFinal then
-        terenFinal.Archivable = true
-        adaugaLog("Terrain pregătit pentru salvare. Archivable = true")
-    end
+    if terenFinal then terenFinal.Archivable = true end
 
     local Options = {
         Mode = "optimized",
@@ -163,53 +160,32 @@ _G.SalveazaHartaFinala = function()
         ShowStatus = true,
     }
 
-    adaugaLog("Opțiuni salvare:")
-    adaugaLog("  SaveTerrain = " .. tostring(Options.SaveTerrain))
-    adaugaLog("  IgnoreTerrain = " .. tostring(Options.IgnoreTerrain))
-    adaugaLog("  Obiecte cached: " .. tostring(totalObjectsCached))
-    adaugaLog("Se apelează synsaveinstance()...")
+    adaugaLog("SaveTerrain=" .. tostring(Options.SaveTerrain))
 
-    local success, err = pcall(function()
-        synsaveinstance(Options)
-    end)
+    local success, err = pcall(function() synsaveinstance(Options) end)
 
     if success then
-        adaugaLog("SALVARE FINALIZATĂ CU SUCCES!")
+        adaugaLog("SALVARE REUȘITĂ!")
     else
-        adaugaLog("EROARE LA SALVARE: " .. tostring(err))
-
-        -- Retry automat fără teren dacă a picat
+        adaugaLog("EROARE: " .. tostring(err))
         if terenSuportat then
-            adaugaLog("Se reîncearcă FĂRĂ teren...")
+            adaugaLog("Retry fără teren...")
             Options.SaveTerrain = false
             Options.IgnoreTerrain = true
-            Options.FileName = "Harta_FARA_Teren_Backup"
-
-            local s2, e2 = pcall(function()
-                synsaveinstance(Options)
-            end)
-
-            if s2 then
-                adaugaLog("Salvare BACKUP (fără teren) reușită!")
-            else
-                adaugaLog("EROARE și la backup: " .. tostring(e2))
-            end
+            Options.FileName = "Harta_FARA_Teren"
+            local s2, e2 = pcall(function() synsaveinstance(Options) end)
+            adaugaLog(s2 and "Backup reușit!" or ("Backup eșuat: " .. tostring(e2)))
         end
     end
 
     pcall(function() CacheFolder:Destroy() end)
     table.clear(processedUIDs)
-
     logConnection:Disconnect()
-    pcall(function()
-        writefile("Delta_Log_Salvare.txt", logData)
-    end)
-
-    print("\n[Delta System] Gata! Verifică fișierul salvat și 'Delta_Log_Salvare.txt'.\n")
+    pcall(function() writefile("Delta_Log_Salvare.txt", logData) end)
+    print("[Delta] Gata! Verifică Delta_Log_Salvare.txt")
 end
 
-print("[Delta System] Setup complet. Cheamă _G.SalveazaHartaFinala() când ești gata.")
+print("[Delta] Setup OK. Cheamă _G.SalveazaHartaFinala() când ești gata.")
 if not terenSuportat then
-    warn("[Delta System] ATENȚIE: Executor-ul tău NU suportă ReadVoxels. Terenul nu va fi salvat.")
-    warn("[Delta System] Pentru teren, ai nevoie de un executor pe PC (Synapse, Wave, Fluxus).")
+    warn("[Delta] ReadVoxels nu merge — terenul NU va fi salvat.")
 end
